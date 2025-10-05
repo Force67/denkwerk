@@ -1,0 +1,22 @@
+[package]
+name = "denkwerk"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Lightweight primitives for building LLM powered Rust applications"
+readme = "README.md"
+
+[dependencies]
+async-stream = "0.3"
+async-trait = "0.1"
+futures-core = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+schemars = { version = "0.8", features = ["derive"] }
+denkwerk-macros = { path = "denkwerk-macros" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
