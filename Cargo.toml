@@ -18,6 +18,7 @@ thiserror = "1.0"
 schemars = { version = "0.8", features = ["derive"] }
 denkwerk-macros = { path = "denkwerk-macros" }
 handlebars = "5"
+meval = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
