@@ -165,6 +165,7 @@ pub struct MagenticOrchestrator {
     roster: Vec<Agent>,
     agents: HashMap<String, Agent>,
     max_rounds: usize,
+    event_callback: Option<Arc<dyn Fn(&MagenticEvent) + Send + Sync>>,
 }
 
 impl MagenticOrchestrator {
@@ -180,6 +181,7 @@ impl MagenticOrchestrator {
             roster: Vec::new(),
             agents: HashMap::new(),
             max_rounds: 12,
+            event_callback: None,
         }
     }
 
@@ -198,6 +200,17 @@ impl MagenticOrchestrator {
     pub fn with_max_rounds(mut self, rounds: usize) -> Self {
         self.max_rounds = rounds.max(1);
         self
+    }
+
+    pub fn with_event_callback(mut self, callback: impl Fn(&MagenticEvent) + Send + Sync + 'static) -> Self {
+        self.event_callback = Some(Arc::new(callback));
+        self
+    }
+
+    fn emit_event(&self, event: &MagenticEvent) {
+        if let Some(callback) = &self.event_callback {
+            callback(event);
+        }
     }
 
     pub async fn run(&self, task: impl Into<String>) -> Result<MagenticRun, AgentError> {
@@ -237,7 +250,9 @@ impl MagenticOrchestrator {
                 } => {
                     if let Some(note) = progress_note.clone() {
                         push_manager_message(&mut transcript, &self.manager, note.clone());
-                        events.push(MagenticEvent::ManagerMessage { message: note });
+                        let event = MagenticEvent::ManagerMessage { message: note };
+                        self.emit_event(&event);
+                        events.push(event);
                     }
 
                     let agent = self
@@ -247,11 +262,13 @@ impl MagenticOrchestrator {
                         .clone();
 
                     push_manager_message(&mut transcript, &self.manager, instructions.clone());
-                    events.push(MagenticEvent::ManagerDelegation {
+                    let event = MagenticEvent::ManagerDelegation {
                         target: target.clone(),
                         instructions: instructions.clone(),
                         progress_note: progress_note.clone(),
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
 
                     let turn = agent
                         .execute(self.provider.as_ref(), &self.model, &transcript)
@@ -260,39 +277,49 @@ impl MagenticOrchestrator {
                     match turn.action {
                         AgentAction::Respond { message } => {
                             push_agent_message(&mut transcript, &agent, &message);
-                            events.push(MagenticEvent::AgentMessage {
+                            let event = MagenticEvent::AgentMessage {
                                 agent: agent.name().to_string(),
                                 message,
-                            });
+                            };
+                            self.emit_event(&event);
+                            events.push(event);
                         }
                         AgentAction::HandOff { target: _, message } => {
                             let text = message.unwrap_or_default();
                             push_agent_message(&mut transcript, &agent, &text);
-                            events.push(MagenticEvent::AgentMessage {
+                            let event = MagenticEvent::AgentMessage {
                                 agent: agent.name().to_string(),
                                 message: text,
-                            });
+                            };
+                            self.emit_event(&event);
+                            events.push(event);
                         }
                         AgentAction::Complete { message } => {
                             if let Some(text) = message.clone() {
                                 push_agent_message(&mut transcript, &agent, &text);
                             }
-                            events.push(MagenticEvent::AgentCompletion {
+                            let event = MagenticEvent::AgentCompletion {
                                 agent: agent.name().to_string(),
                                 message,
-                            });
+                            };
+                            self.emit_event(&event);
+                            events.push(event);
                         }
                     }
                 }
                 MagenticDecision::Message { content } => {
                     push_manager_message(&mut transcript, &self.manager, content.clone());
-                    events.push(MagenticEvent::ManagerMessage { message: content });
+                    let event = MagenticEvent::ManagerMessage { message: content };
+                    self.emit_event(&event);
+                    events.push(event);
                 }
                 MagenticDecision::Complete { result } => {
                     push_manager_message(&mut transcript, &self.manager, result.clone());
-                    events.push(MagenticEvent::Completed {
+                    let event = MagenticEvent::Completed {
                         message: result.clone(),
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
                     return Ok(MagenticRun {
                         final_result: Some(result),
                         events,

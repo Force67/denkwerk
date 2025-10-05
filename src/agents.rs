@@ -287,6 +287,7 @@ pub struct HandoffOrchestrator {
     model: String,
     agents: HashMap<String, Agent>,
     max_handoffs: Option<usize>,
+    event_callback: Option<Arc<dyn Fn(&HandoffEvent) + Send + Sync>>,
 }
 
 impl HandoffOrchestrator {
@@ -296,6 +297,7 @@ impl HandoffOrchestrator {
             model: model.into(),
             agents: HashMap::new(),
             max_handoffs: Some(4),
+            event_callback: None,
         }
     }
 
@@ -310,6 +312,17 @@ impl HandoffOrchestrator {
 
     pub fn agent(&self, name: &str) -> Option<&Agent> {
         self.agents.get(name)
+    }
+
+    pub fn with_event_callback(mut self, callback: impl Fn(&HandoffEvent) + Send + Sync + 'static) -> Self {
+        self.event_callback = Some(Arc::new(callback));
+        self
+    }
+
+    fn emit_event(&self, event: &HandoffEvent) {
+        if let Some(callback) = &self.event_callback {
+            callback(event);
+        }
     }
 
     pub fn session<'a>(
@@ -378,10 +391,12 @@ impl<'a> HandoffSession<'a> {
                     let mut assistant = ChatMessage::assistant(message.clone());
                     assistant.name = Some(agent.name.clone());
                     self.transcript.push(assistant);
-                    events.push(HandoffEvent::Message {
+                    let event = HandoffEvent::Message {
                         agent: agent.name.clone(),
                         message: message.clone(),
-                    });
+                    };
+                    self.orchestrator.emit_event(&event);
+                    events.push(event);
 
                     return Ok(HandoffTurn {
                         reply: Some(message),
@@ -400,20 +415,24 @@ impl<'a> HandoffSession<'a> {
                         let mut assistant = ChatMessage::assistant(message.clone());
                         assistant.name = Some(agent.name.clone());
                         self.transcript.push(assistant);
-                        events.push(HandoffEvent::Message {
+                        let event = HandoffEvent::Message {
                             agent: agent.name.clone(),
                             message,
-                        });
+                        };
+                        self.orchestrator.emit_event(&event);
+                        events.push(event);
                     }
 
                     if !self.orchestrator.agents.contains_key(&target) {
                         return Err(AgentError::UnknownAgent(target));
                     }
 
-                    events.push(HandoffEvent::HandOff {
+                    let event = HandoffEvent::HandOff {
                         from: agent.name.clone(),
                         to: target.clone(),
-                    });
+                    };
+                    self.orchestrator.emit_event(&event);
+                    events.push(event);
 
                     self.active_agent = target;
                     continue;
@@ -423,15 +442,19 @@ impl<'a> HandoffSession<'a> {
                         let mut assistant = ChatMessage::assistant(message.clone());
                         assistant.name = Some(agent.name.clone());
                         self.transcript.push(assistant);
-                        events.push(HandoffEvent::Message {
+                        let event = HandoffEvent::Message {
                             agent: agent.name.clone(),
                             message,
-                        });
+                        };
+                        self.orchestrator.emit_event(&event);
+                        events.push(event);
                     }
 
-                    events.push(HandoffEvent::Completed {
+                    let event = HandoffEvent::Completed {
                         agent: agent.name.clone(),
-                    });
+                    };
+                    self.orchestrator.emit_event(&event);
+                    events.push(event);
 
                     return Ok(HandoffTurn {
                         reply: message,

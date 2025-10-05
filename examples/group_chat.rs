@@ -44,6 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("{agent} signaled completion.\n");
                 }
             }
+            GroupChatEvent::UserMessage { message } => {
+                println!("[User]: {message}\n");
+            }
             GroupChatEvent::Terminated { reason } => {
                 println!("[Manager terminated] {reason}\n");
             }

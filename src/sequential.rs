@@ -31,6 +31,7 @@ pub struct SequentialOrchestrator {
     provider: Arc<dyn LLMProvider>,
     model: String,
     pipeline: Vec<Agent>,
+    event_callback: Option<Arc<dyn Fn(&SequentialEvent) + Send + Sync>>,
 }
 
 impl SequentialOrchestrator {
@@ -39,6 +40,7 @@ impl SequentialOrchestrator {
             provider,
             model: model.into(),
             pipeline: Vec::new(),
+            event_callback: None,
         }
     }
 
@@ -52,6 +54,17 @@ impl SequentialOrchestrator {
     {
         self.pipeline.extend(agents);
         self
+    }
+
+    pub fn with_event_callback(mut self, callback: impl Fn(&SequentialEvent) + Send + Sync + 'static) -> Self {
+        self.event_callback = Some(Arc::new(callback));
+        self
+    }
+
+    fn emit_event(&self, event: &SequentialEvent) {
+        if let Some(callback) = &self.event_callback {
+            callback(event);
+        }
     }
 
     pub async fn run(&self, task: impl Into<String>) -> Result<SequentialRun, AgentError> {
@@ -73,10 +86,12 @@ impl SequentialOrchestrator {
                 AgentAction::Respond { message } => {
                     push_agent_message(&mut transcript, agent, &message);
                     payload = message.clone();
-                    events.push(SequentialEvent::Step {
+                    let event = SequentialEvent::Step {
                         agent: agent.name().to_string(),
                         output: message,
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
                 }
                 AgentAction::HandOff { target: _, message } => {
                     let text = message.unwrap_or_default();
@@ -84,10 +99,12 @@ impl SequentialOrchestrator {
                     if !text.is_empty() {
                         payload = text.clone();
                     }
-                    events.push(SequentialEvent::Step {
+                    let event = SequentialEvent::Step {
                         agent: agent.name().to_string(),
                         output: text,
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
                 }
                 AgentAction::Complete { message } => {
                     let text = message.clone();
@@ -95,10 +112,12 @@ impl SequentialOrchestrator {
                         push_agent_message(&mut transcript, agent, content);
                         payload = content.clone();
                     }
-                    events.push(SequentialEvent::Completed {
+                    let event = SequentialEvent::Completed {
                         agent: agent.name().to_string(),
                         output: text.clone(),
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
 
                     return Ok(SequentialRun {
                         final_output: text.or_else(|| Some(payload.clone())),
@@ -110,10 +129,12 @@ impl SequentialOrchestrator {
 
             // If this was the last agent, mark completion with its output.
             if index == self.pipeline.len() - 1 {
-                events.push(SequentialEvent::Completed {
+                let event = SequentialEvent::Completed {
                     agent: agent.name().to_string(),
                     output: Some(payload.clone()),
-                });
+                };
+                self.emit_event(&event);
+                events.push(event);
 
                 return Ok(SequentialRun {
                     final_output: Some(payload),
@@ -221,5 +242,31 @@ mod tests {
         let orchestrator = SequentialOrchestrator::new(provider, "model");
         let error = orchestrator.run("task").await.unwrap_err();
         assert!(matches!(error, AgentError::NoAgentsRegistered));
+    }
+
+    #[tokio::test]
+    async fn fires_event_callback() {
+        let provider: Arc<dyn LLMProvider> = Arc::new(TestProvider::new(vec![
+            "step one".to_string(),
+            "step two".to_string(),
+        ]));
+
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        let orchestrator = SequentialOrchestrator::new(provider, "model")
+            .with_agents(vec![
+                Agent::from_string("A", "first"),
+                Agent::from_string("B", "second"),
+            ])
+            .with_event_callback(move |event| {
+                if let SequentialEvent::Step { agent, .. } = event {
+                    events_clone.lock().unwrap().push(agent.clone());
+                }
+            });
+
+        let _ = orchestrator.run("task").await.unwrap();
+        let recorded = events.lock().unwrap().clone();
+        assert_eq!(recorded, vec!["A".to_string(), "B".to_string()]);
     }
 }

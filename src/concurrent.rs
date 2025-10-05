@@ -31,6 +31,7 @@ pub struct ConcurrentOrchestrator {
     provider: Arc<dyn LLMProvider>,
     model: String,
     agents: Vec<Agent>,
+    event_callback: Option<Arc<dyn Fn(&ConcurrentEvent) + Send + Sync>>,
 }
 
 impl ConcurrentOrchestrator {
@@ -39,6 +40,7 @@ impl ConcurrentOrchestrator {
             provider,
             model: model.into(),
             agents: Vec::new(),
+            event_callback: None,
         }
     }
 
@@ -52,6 +54,17 @@ impl ConcurrentOrchestrator {
     {
         self.agents.extend(agents);
         self
+    }
+
+    pub fn with_event_callback(mut self, callback: impl Fn(&ConcurrentEvent) + Send + Sync + 'static) -> Self {
+        self.event_callback = Some(Arc::new(callback));
+        self
+    }
+
+    fn emit_event(&self, event: &ConcurrentEvent) {
+        if let Some(callback) = &self.event_callback {
+            callback(event);
+        }
     }
 
     pub async fn run(&self, task: impl Into<String>) -> Result<ConcurrentRun, AgentError> {
@@ -88,10 +101,12 @@ impl ConcurrentOrchestrator {
             match action {
                 AgentAction::Respond { message } => {
                     push_agent_message(&mut transcript, &agent, &message);
-                    events.push(ConcurrentEvent::Message {
+                    let event = ConcurrentEvent::Message {
                         agent: name.clone(),
                         output: message.clone(),
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
                     results.push(ConcurrentResult {
                         agent: name,
                         output: Some(message),
@@ -100,10 +115,12 @@ impl ConcurrentOrchestrator {
                 AgentAction::HandOff { target: _, message } => {
                     let text = message.unwrap_or_default();
                     push_agent_message(&mut transcript, &agent, &text);
-                    events.push(ConcurrentEvent::Message {
+                    let event = ConcurrentEvent::Message {
                         agent: name.clone(),
                         output: text.clone(),
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
                     results.push(ConcurrentResult {
                         agent: name,
                         output: Some(text),
@@ -113,10 +130,12 @@ impl ConcurrentOrchestrator {
                     if let Some(ref content) = message {
                         push_agent_message(&mut transcript, &agent, content);
                     }
-                    events.push(ConcurrentEvent::Completed {
+                    let event = ConcurrentEvent::Completed {
                         agent: name.clone(),
                         output: message.clone(),
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
                     results.push(ConcurrentResult { agent: name, output: message });
                 }
             }

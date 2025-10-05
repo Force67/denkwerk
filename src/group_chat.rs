@@ -25,11 +25,17 @@ pub trait GroupChatManager: Send + Sync {
     fn max_rounds(&self) -> Option<usize> {
         None
     }
+
+    /// Determines whether the orchestrator should pause for human input during the given round.
+    fn should_request_user_input(&self, _round: usize, _transcript: &[ChatMessage]) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct RoundRobinGroupChatManager {
     pub maximum_rounds: Option<usize>,
+    pub user_prompt_frequency: Option<usize>,
     index: usize,
 }
 
@@ -37,12 +43,18 @@ impl RoundRobinGroupChatManager {
     pub fn new() -> Self {
         Self {
             maximum_rounds: Some(6),
+            user_prompt_frequency: None,
             index: 0,
         }
     }
 
     pub fn with_maximum_rounds(mut self, rounds: Option<usize>) -> Self {
         self.maximum_rounds = rounds;
+        self
+    }
+
+    pub fn with_user_prompt_frequency(mut self, every: Option<usize>) -> Self {
+        self.user_prompt_frequency = every.and_then(|value| if value == 0 { None } else { Some(value) });
         self
     }
 }
@@ -84,12 +96,20 @@ impl GroupChatManager for RoundRobinGroupChatManager {
     fn max_rounds(&self) -> Option<usize> {
         self.maximum_rounds
     }
+
+    fn should_request_user_input(&self, round: usize, _transcript: &[ChatMessage]) -> bool {
+        match self.user_prompt_frequency {
+            Some(frequency) if frequency > 0 && round > 0 && round % frequency == 0 => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum GroupChatEvent {
     AgentMessage { agent: String, message: String },
     AgentCompletion { agent: String, message: Option<String> },
+    UserMessage { message: String },
     Terminated { reason: String },
 }
 
@@ -106,6 +126,8 @@ pub struct GroupChatOrchestrator<M: GroupChatManager + 'static> {
     model: String,
     agents: Vec<Agent>,
     manager: M,
+    event_callback: Option<Arc<dyn Fn(&GroupChatEvent) + Send + Sync>>,
+    user_input_callback: Option<Arc<dyn Fn(&[ChatMessage]) -> Option<String> + Send + Sync>>,
 }
 
 impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
@@ -115,6 +137,8 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
             model: model.into(),
             agents: Vec::new(),
             manager,
+            event_callback: None,
+            user_input_callback: None,
         }
     }
 
@@ -128,6 +152,25 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
     {
         self.agents.extend(agents);
         self
+    }
+
+    pub fn with_event_callback(mut self, callback: impl Fn(&GroupChatEvent) + Send + Sync + 'static) -> Self {
+        self.event_callback = Some(Arc::new(callback));
+        self
+    }
+
+    pub fn with_user_input_callback(
+        mut self,
+        callback: impl Fn(&[ChatMessage]) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.user_input_callback = Some(Arc::new(callback));
+        self
+    }
+
+    fn emit_event(&self, event: &GroupChatEvent) {
+        if let Some(callback) = &self.event_callback {
+            callback(event);
+        }
     }
 
     pub async fn run(&mut self, task: impl Into<String>) -> Result<GroupChatRun, AgentError> {
@@ -144,18 +187,37 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
         self.manager.on_start(&self.agents);
 
         loop {
+            if self.manager.should_request_user_input(rounds, &transcript) {
+                let callback = self
+                    .user_input_callback
+                    .as_ref()
+                    .ok_or_else(|| AgentError::InvalidManagerDecision("user input requested but no callback provided".into()))?;
+
+                if let Some(message) = callback(&transcript) {
+                    transcript.push(ChatMessage::user(message.clone()));
+                    final_output = Some(message.clone());
+                    let event = GroupChatEvent::UserMessage { message };
+                    self.emit_event(&event);
+                    events.push(event);
+                }
+            }
+
             if self.manager.should_terminate(rounds, &transcript) {
-                events.push(GroupChatEvent::Terminated {
+                let event = GroupChatEvent::Terminated {
                     reason: "manager requested termination".to_string(),
-                });
+                };
+                self.emit_event(&event);
+                events.push(event);
                 break;
             }
 
             if let Some(limit) = self.manager.max_rounds() {
                 if rounds >= limit {
-                    events.push(GroupChatEvent::Terminated {
+                    let event = GroupChatEvent::Terminated {
                         reason: format!("maximum rounds {limit} reached"),
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
                     break;
                 }
             }
@@ -182,29 +244,35 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
                 AgentAction::Respond { message } => {
                     push_agent_message(&mut transcript, &agent, &message);
                     final_output = Some(message.clone());
-                    events.push(GroupChatEvent::AgentMessage {
+                    let event = GroupChatEvent::AgentMessage {
                         agent: agent.name().to_string(),
                         message,
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
                 }
                 AgentAction::HandOff { target: _, message } => {
                     let text = message.unwrap_or_default();
                     push_agent_message(&mut transcript, &agent, &text);
                     final_output = Some(text.clone());
-                    events.push(GroupChatEvent::AgentMessage {
+                    let event = GroupChatEvent::AgentMessage {
                         agent: agent.name().to_string(),
                         message: text,
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
                 }
                 AgentAction::Complete { message } => {
                     if let Some(ref content) = message {
                         push_agent_message(&mut transcript, &agent, content);
                         final_output = Some(content.clone());
                     }
-                    events.push(GroupChatEvent::AgentCompletion {
+                    let event = GroupChatEvent::AgentCompletion {
                         agent: agent.name().to_string(),
                         message: message.clone(),
-                    });
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
                     break;
                 }
             }
@@ -303,5 +371,56 @@ mod tests {
         let mut orchestrator = GroupChatOrchestrator::new(provider, "model", manager);
         let error = orchestrator.run("task").await.unwrap_err();
         assert!(matches!(error, AgentError::NoAgentsRegistered));
+    }
+
+    struct PromptManager {
+        max_rounds: usize,
+    }
+
+    impl GroupChatManager for PromptManager {
+        fn on_start(&mut self, _roster: &[Agent]) {}
+
+        fn select_next_agent(
+            &mut self,
+            roster: &[Agent],
+            _transcript: &[ChatMessage],
+            _round: usize,
+        ) -> Option<String> {
+            roster.get(0).map(|agent| agent.name().to_string())
+        }
+
+        fn should_terminate(&self, round: usize, _transcript: &[ChatMessage]) -> bool {
+            round >= self.max_rounds
+        }
+
+        fn should_request_user_input(&self, round: usize, _transcript: &[ChatMessage]) -> bool {
+            round == 0
+        }
+    }
+
+    #[tokio::test]
+    async fn injects_user_input() {
+        let provider: Arc<dyn LLMProvider> = Arc::new(TestProvider::new(vec![
+            "agent reply".to_string(),
+            "agent final".to_string(),
+        ]));
+
+        let user_messages: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let user_messages_clone = Arc::clone(&user_messages);
+
+        let mut orchestrator = GroupChatOrchestrator::new(provider, "model", PromptManager { max_rounds: 2 })
+            .with_agents(vec![Agent::from_string("Writer", "Respond")])
+            .with_user_input_callback(move |_transcript| {
+                user_messages_clone.lock().unwrap().push("User clarifies".to_string());
+                Some("User clarifies".to_string())
+            });
+
+        let run = orchestrator.run("Task").await.expect("group chat should run");
+        assert!(run
+            .events
+            .iter()
+            .any(|event| matches!(event, GroupChatEvent::UserMessage { message } if message == "User clarifies")));
+        assert_eq!(user_messages.lock().unwrap().len(), 1);
+        assert!(run.transcript.iter().any(|msg| matches!(msg.role, crate::types::MessageRole::User) && msg.text() == Some("User clarifies")));
     }
 }
