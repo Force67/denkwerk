@@ -51,6 +51,8 @@ pub struct Agent {
     top_p: Option<f32>,
     max_tokens: Option<u32>,
     tool_choice: Option<ToolChoice>,
+    provider_override: Option<Arc<dyn LLMProvider>>,
+    model_override: Option<String>,
 }
 
 impl fmt::Debug for Agent {
@@ -77,6 +79,8 @@ impl Agent {
             top_p: None,
             max_tokens: None,
             tool_choice: None,
+            provider_override: None,
+            model_override: None,
         }
     }
 
@@ -136,6 +140,16 @@ impl Agent {
         self
     }
 
+    pub fn with_provider(mut self, provider: Arc<dyn LLMProvider>) -> Self {
+        self.provider_override = Some(provider);
+        self
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model_override = Some(model.into());
+        self
+    }
+
     pub(crate) async fn execute(
         &self,
         provider: &(dyn LLMProvider + Send + Sync),
@@ -146,7 +160,14 @@ impl Agent {
         messages.push(ChatMessage::system(self.instructions.clone()));
         messages.extend(history.iter().cloned());
 
-        let mut request = CompletionRequest::new(model.to_string(), messages);
+        let active_provider: &(dyn LLMProvider + Send + Sync) = match &self.provider_override {
+            Some(custom) => custom.as_ref(),
+            None => provider,
+        };
+
+        let target_model = self.model_override.as_deref().unwrap_or(model);
+
+        let mut request = CompletionRequest::new(target_model.to_string(), messages);
 
         if let Some(max_tokens) = self.max_tokens {
             request = request.with_max_tokens(max_tokens);
@@ -168,7 +189,7 @@ impl Agent {
             request = request.with_tool_choice(tool_choice.clone());
         }
 
-        let response = provider.complete(request).await?;
+        let response = active_provider.complete(request).await?;
         let content = response.message.text().unwrap_or_default();
         let action = AgentAction::from_response(content);
 
