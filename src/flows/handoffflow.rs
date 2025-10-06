@@ -10,6 +10,7 @@ use serde_json::Value;
 use tokio::time;
 
 use crate::{
+    eval::scenario::DecisionSource,
     functions::{FunctionRegistry, ToolChoice, json_schema_for, to_value},
     types::ChatMessage,
     Agent, AgentError, LLMError, LLMProvider,
@@ -38,14 +39,20 @@ pub enum HandoffMatcher {
 
 /// One rule = matcher + target resolver (static or dynamic)
 pub struct HandoffRule {
+    pub id: String,
     pub matcher: HandoffMatcher,
     pub resolve: Arc<dyn Fn(&[ChatMessage], &str) -> Option<HandoffDirective> + Send + Sync>,
 }
 
 impl HandoffRule {
     pub fn to(target: impl Into<String>, matcher: HandoffMatcher) -> Self {
+        Self::with_id("", target, matcher)
+    }
+
+    pub fn with_id(id: impl Into<String>, target: impl Into<String>, matcher: HandoffMatcher) -> Self {
         let target = target.into();
         Self {
+            id: id.into(),
             matcher,
             resolve: Arc::new(move |_t, _txt| {
                 Some(HandoffDirective { target: target.clone(), message: None })
@@ -308,7 +315,7 @@ pub(crate) struct AgentTurn {
 #[derive(Debug, Clone)]
 pub enum HandoffEvent {
     Message { agent: String, message: String },
-    HandOff { from: String, to: String },
+    HandOff { from: String, to: String, because: DecisionSource },
     Completed { agent: String },
 }
 
@@ -622,11 +629,22 @@ impl<'a> HandoffSession<'a> {
             };
 
             let mut action = turn.action;
+            let mut handoff_source = DecisionSource::Parser; // default
+
+            // Check if handoff tool was called
+            let handoff_tool_called = turn.tool_calls.iter().any(|tc| tc.function.name == "handoff");
 
             // If action is Respond, run deterministic rules.
             if let AgentAction::Respond { ref message } = action {
                 if let Some(dir) = self.orchestrator.match_rules(&self.transcript, message) {
                     action = AgentAction::HandOff { target: dir.target, message: dir.message };
+                    handoff_source = DecisionSource::Rule;
+                }
+            } else if let AgentAction::HandOff { .. } = action {
+                if handoff_tool_called {
+                    handoff_source = DecisionSource::Tool;
+                } else {
+                    handoff_source = DecisionSource::Parser;
                 }
             }
 
@@ -676,6 +694,7 @@ impl<'a> HandoffSession<'a> {
                     let event = HandoffEvent::HandOff {
                         from: agent.name().to_string(),
                         to: resolved.clone(),
+                        because: handoff_source,
                     };
                     self.orchestrator.emit_event(&event);
                     events.push(event);

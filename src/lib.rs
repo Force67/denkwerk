@@ -1,11 +1,12 @@
-pub mod error;
-pub mod providers;
-pub mod types;
-pub mod functions;
-pub mod agents;
-pub mod flows;
-pub mod plugins;
-pub mod history;
+ pub mod error;
+ pub mod providers;
+ pub mod types;
+ pub mod functions;
+ pub mod agents;
+ pub mod flows;
+ pub mod plugins;
+ pub mod history;
+ pub mod eval;
 
 pub use error::LLMError;
 pub use providers::LLMProvider;
@@ -50,10 +51,15 @@ pub use flows::group_chat::{
     GroupChatRun,
     RoundRobinGroupChatManager,
 };
-pub use plugins::math;
-pub use schemars::JsonSchema;
-pub use denkwerk_macros::{kernel_function, kernel_module};
-pub use history::{
+ pub use plugins::math;
+ pub use schemars::JsonSchema;
+ pub use denkwerk_macros::{kernel_function, kernel_module};
+ pub use eval::{
+     scenario::{DecisionSource, EvalScenario, ExpectStep, ExpectedTrace, ScriptedTurn},
+     report::{CaseReport, EvalReport},
+     runner::EvalRunner,
+ };
+ pub use history::{
     ChatHistory,
     ChatHistoryCompressor,
     ChatHistorySummarizer,

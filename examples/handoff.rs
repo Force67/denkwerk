@@ -83,7 +83,7 @@ fn render_turn(turn: &HandoffTurn) {
                 println!("{}: {}", colorize_agent(agent), message);
                 last_agent_message = Some((agent.clone(), message.clone()));
             }
-            HandoffEvent::HandOff { from, to } => {
+            HandoffEvent::HandOff { from, to, because: _ } => {
                 // Show the agent's reasoning for the handoff in color
                 if let Some((agent, reasoning)) = &last_agent_message {
                     if agent == from {

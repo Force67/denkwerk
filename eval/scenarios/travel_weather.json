@@ -1,0 +1,60 @@
+{
+  "name": "travel → weather",
+  "seed": 1,
+  "initial_agent": "concierge",
+  "user_input": "Plan trip incl. flights, hotel, weather.",
+  "scripted": [
+    {
+      "agent": "concierge",
+      "response": "handoff to travel",
+      "latency_ms": null
+    },
+    {
+      "agent": "travel",
+      "response": "{\"action\":\"handoff\",\"target\":\"weather\",\"message\":\"Flights/Hotels…\"}",
+      "latency_ms": null
+    },
+    {
+      "agent": "weather",
+      "response": "{\"action\":\"complete\",\"message\":\"Forecast OK\"}",
+      "latency_ms": null
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "HandOff": {
+          "from": "concierge",
+          "to": "travel",
+          "because": "Parser"
+        }
+      },
+      {
+        "Msg": {
+          "agent": "travel",
+          "contains": "Flights"
+        }
+      },
+      {
+        "HandOff": {
+          "from": "travel",
+          "to": "weather",
+          "because": "Parser"
+        }
+      },
+      {
+        "Msg": {
+          "agent": "weather",
+          "contains": "Forecast"
+        }
+      },
+      {
+        "Complete": {
+          "agent": "weather"
+        }
+      }
+    ],
+    "final_reply_contains": "Forecast",
+    "max_rounds_le": 6
+  }
+}
