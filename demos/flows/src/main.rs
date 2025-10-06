@@ -321,29 +321,23 @@ async fn demo_magentic(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn st
 async fn demo_handoff(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn std::error::Error>> {
     let weather_agent = Agent::from_string(
         "weather",
-        "You are the Weather Specialist. Provide detailed weather forecasts, temperature ranges, and packing recommendations for specific destinations and dates. Focus only on weather information.",
+        "You are the Weather Specialist. Provide detailed weather forecasts, temperature ranges, and packing recommendations for specific destinations and dates.
+        Focus only on weather information.",
     );
 
     let travel_agent = Agent::from_string(
         "travel",
         r#"You are a Travel Planner. Focus on flights, hotels, and transportation. Provide specific recommendations and booking advice.
-
-When you receive a travel planning request that mentions weather information, first provide your travel recommendations, then hand off to the weather specialist:
-
-{"action": "handoff", "target": "weather", "message": "Please provide weather information for this trip"}
-
-If weather is not mentioned, complete the travel planning with {"action": "complete", "message": "Travel planning complete"}."#,
+        When you receive a travel planning request that mentions weather information, first provide your travel recommendations, then hand off to the weather specialist.
+        If weather is not mentioned, complete the travel planning with {"action": "complete", "message": "Travel planning complete"}."#,
     );
 
     let concierge = Agent::from_string(
         "concierge",
-        r#"You are a Concierge Coordinator. Your role is to coordinate travel planning - DO NOT provide specific flight, hotel, or weather details yourself. Instead, delegate to the appropriate specialists for detailed information.
-
-When you receive a travel planning request, start by handing off to the travel agent for the main planning:
-
-{"action": "handoff", "target": "travel", "message": "Please help plan this business trip including flights, hotels, and itinerary"}
-
-The travel agent will handle weather information by coordinating with the weather specialist if needed. Do not send multiple handoff commands - just start with the travel agent."#,
+        r#"You are a Concierge Coordinator. Your role is to coordinate travel planning - DO NOT provide specific flight, hotel, or weather details yourself.
+        Instead, delegate to the appropriate specialists for detailed information.
+        When you receive a travel planning request, start by handing off to the travel agent for the main planning.
+        The travel agent will handle weather information by coordinating with the weather specialist if needed. Just start with the travel agent."#,
     );
 
     let mut orchestrator = HandoffOrchestrator::new(provider.clone(), "openai/gpt-4o-mini")

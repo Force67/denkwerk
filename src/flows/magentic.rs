@@ -7,10 +7,12 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-    agents::{Agent, AgentAction, AgentError},
+    agents::{Agent, AgentError},
     types::{ChatMessage, CompletionRequest, MessageRole},
     LLMProvider,
 };
+
+use super::handoffflow::AgentAction;
 
 /// Guides the multi-agent collaboration by emitting structured delegation commands.
 #[derive(Clone)]

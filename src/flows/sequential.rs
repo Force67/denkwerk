@@ -3,10 +3,12 @@ use std::{
 };
 
 use crate::{
-    agents::{Agent, AgentAction, AgentError},
+    agents::{Agent, AgentError},
     types::ChatMessage,
     LLMProvider,
 };
+
+use super::handoffflow::AgentAction;
 
 #[derive(Debug, Clone)]
 pub enum SequentialEvent {

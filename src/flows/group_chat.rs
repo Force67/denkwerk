@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use crate::{
-    agents::{Agent, AgentAction, AgentError},
+    agents::{Agent, AgentError},
     types::ChatMessage,
     LLMProvider,
 };
+
+use super::handoffflow::AgentAction;
 
 pub trait GroupChatManager: Send + Sync {
     /// Called before the orchestration starts so the manager can reset its state.

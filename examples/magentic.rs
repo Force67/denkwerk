@@ -32,11 +32,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     orchestrator.register_agent(research)?;
     orchestrator.register_agent(coder)?;
 
-    let brief = ""
-        "Create an energy efficiency brief comparing ResNet-50, BERT-base, and GPT-2. "
-        "Estimate both training and inference energy usage plus the associated CO2 emissions "
-        "for a 24-hour window on Azure Standard_NC6s_v3 infrastructure. "
-        "Conclude with recommendations for the most efficient model per workload.";
+    let brief = concat!(
+        "Create an energy efficiency brief comparing ResNet-50, BERT-base, and GPT-2. ",
+        "Estimate both training and inference energy usage plus the associated CO2 emissions ",
+        "for a 24-hour window on Azure Standard_NC6s_v3 infrastructure. ",
+        "Conclude with recommendations for the most efficient model per workload."
+    );
 
     let run = orchestrator.run(brief).await?;
 

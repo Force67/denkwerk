@@ -3,10 +3,7 @@ pub mod providers;
 pub mod types;
 pub mod functions;
 pub mod agents;
-pub mod magentic;
-pub mod sequential;
-pub mod concurrent;
-pub mod group_chat;
+pub mod flows;
 pub mod plugins;
 pub mod history;
 
@@ -20,40 +17,39 @@ pub use functions::{
     DynKernelFunction, FunctionCall, FunctionDefinition, FunctionRegistry, Tool, ToolCall,
     ToolCallType, ToolChoice, ToolChoiceFunction, ToolChoiceKind, ToolChoiceSimple,
 };
-pub use agents::{
-    Agent,
+pub use agents::{Agent, AgentError};
+pub use flows::handoffflow::{
     AgentAction,
-    AgentError,
     HandoffEvent,
     HandoffOrchestrator,
     HandoffSession,
     HandoffTurn,
 };
-pub use magentic::{
+pub use flows::magentic::{
     MagenticDecision,
     MagenticEvent,
     MagenticManager,
     MagenticOrchestrator,
     MagenticRun,
 };
-pub use sequential::{
+pub use flows::sequential::{
     SequentialEvent,
     SequentialOrchestrator,
     SequentialRun,
 };
-pub use concurrent::{
+pub use flows::concurrent::{
     ConcurrentEvent,
     ConcurrentOrchestrator,
     ConcurrentResult,
     ConcurrentRun,
 };
- pub use group_chat::{
-     GroupChatEvent,
-     GroupChatManager,
-     GroupChatOrchestrator,
-     GroupChatRun,
-     RoundRobinGroupChatManager,
- };
+pub use flows::group_chat::{
+    GroupChatEvent,
+    GroupChatManager,
+    GroupChatOrchestrator,
+    GroupChatRun,
+    RoundRobinGroupChatManager,
+};
 pub use plugins::math;
 pub use schemars::JsonSchema;
 pub use denkwerk_macros::{kernel_function, kernel_module};

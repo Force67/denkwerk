@@ -3,10 +3,12 @@ use std::sync::Arc;
 use futures_util::{stream::FuturesUnordered, StreamExt};
 
 use crate::{
-    agents::{Agent, AgentAction, AgentError},
+    agents::{Agent, AgentError},
     types::ChatMessage,
     LLMProvider,
 };
+
+use super::handoffflow::AgentAction;
 
 #[derive(Debug, Clone)]
 pub enum ConcurrentEvent {
