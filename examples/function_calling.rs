@@ -50,8 +50,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     messages.push(response.message.clone());
 
     if !response.message.tool_calls.is_empty() {
-        for call in &response.message.tool_calls {
-            let result = registry.invoke(&call.function).await?;
+        // Execute tool calls in parallel but preserve order for LLM expectations
+        use futures_util::future::join_all;
+
+        let tool_futures: Vec<_> = response.message.tool_calls.iter()
+            .map(|call| registry.invoke(&call.function))
+            .collect();
+
+        let results = join_all(tool_futures).await;
+
+        // Process results in original call order
+        for (call, result) in response.message.tool_calls.iter().zip(results) {
+            let result = result?;
             let payload = to_string(&result)?;
             let tool_id = call
                 .id

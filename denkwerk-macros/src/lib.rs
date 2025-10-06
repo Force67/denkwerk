@@ -355,8 +355,8 @@ fn expand_kernel_function(args: MetaList, function: &mut ItemFn) -> Result<Token
                 #definition_ident()
             }
 
-            async fn invoke(&self, arguments: ::serde_json::Value) -> Result<::serde_json::Value, ::denkwerk::LLMError> {
-                let args: #args_struct_ident = ::serde_json::from_value(arguments)
+            async fn invoke(&self, arguments: &::serde_json::Value) -> Result<::serde_json::Value, ::denkwerk::LLMError> {
+                let args: #args_struct_ident = ::serde_json::from_value(arguments.clone())
                     .map_err(|error| ::denkwerk::LLMError::InvalidFunctionArguments(error.to_string()))?;
                 let #args_struct_ident { #(#assignment_idents),* } = args;
                 #invoke_body
@@ -600,8 +600,8 @@ fn expand_kernel_method(
                 #definition_ident()
             }
 
-            async fn invoke(&self, arguments: ::serde_json::Value) -> Result<::serde_json::Value, ::denkwerk::LLMError> {
-                let args: #args_struct_ident = ::serde_json::from_value(arguments)
+            async fn invoke(&self, arguments: &::serde_json::Value) -> Result<::serde_json::Value, ::denkwerk::LLMError> {
+                let args: #args_struct_ident = ::serde_json::from_value(arguments.clone())
                     .map_err(|error| ::denkwerk::LLMError::InvalidFunctionArguments(error.to_string()))?;
                 let #args_struct_ident { #(#assignment_idents),* } = args;
                 #invoke_body

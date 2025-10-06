@@ -305,7 +305,7 @@ impl<'a> Serialize for SerializableFunctionCall<'a> {
 pub trait KernelFunction: Send + Sync {
     fn definition(&self) -> FunctionDefinition;
 
-    async fn invoke(&self, arguments: Value) -> Result<Value, LLMError>;
+    async fn invoke(&self, arguments: &Value) -> Result<Value, LLMError>;
 }
 
 pub type DynKernelFunction = Arc<dyn KernelFunction>;
@@ -358,7 +358,7 @@ impl FunctionRegistry {
         let function = self
             .get(&call.name)
             .ok_or_else(|| LLMError::UnknownFunction(call.name.clone()))?;
-        function.invoke(call.arguments.clone()).await
+        function.invoke(&call.arguments).await
     }
 }
 

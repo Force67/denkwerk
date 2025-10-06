@@ -173,8 +173,18 @@ async fn run_demo(
     // Handle tool calls
     let mut tool_call_count = 0;
     while !response.message.tool_calls.is_empty() && tool_call_count < 5 {
-        for call in &response.message.tool_calls {
-            let result = registry.invoke(&call.function).await?;
+        // Execute tool calls in parallel but preserve order for LLM expectations
+        use futures_util::future::join_all;
+
+        let tool_futures: Vec<_> = response.message.tool_calls.iter()
+            .map(|call| registry.invoke(&call.function))
+            .collect();
+
+        let results = join_all(tool_futures).await;
+
+        // Process results in original call order
+        for (call, result) in response.message.tool_calls.iter().zip(results) {
+            let result = result?;
             let payload = serde_json::to_string(&result)?;
             let tool_id = call
                 .id
