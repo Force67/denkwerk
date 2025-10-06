@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::{
     agents::{Agent, AgentAction, AgentError},
-    types::{ChatMessage, MessageRole},
+    types::{ChatMessage, CompletionRequest, MessageRole},
     LLMProvider,
 };
 
@@ -228,19 +228,19 @@ impl MagenticOrchestrator {
             );
 
             let manager_messages = vec![ChatMessage::user(manager_prompt)];
-            let manager_turn = self
-                .manager
-                .agent()
-                .execute(self.provider.as_ref(), &self.model, &manager_messages)
-                .await?;
+            // Execute the manager directly without Agent action parsing
+            // to avoid issues with tool calls or malformed responses
+            let request = CompletionRequest::new(self.model.clone(), manager_messages);
+            let response = self.provider.complete(request).await?;
+            let manager_text = response.message.text().unwrap_or_default();
 
-            let manager_text = manager_turn
-                .action
-                .message()
-                .map(|m| m.to_string())
-                .ok_or_else(|| AgentError::InvalidManagerDecision("manager response missing content".into()))?;
+            if manager_text.trim().is_empty() {
+                return Err(AgentError::InvalidManagerDecision(
+                    "manager response is empty or contains no text".into()
+                ));
+            }
 
-            let decision = MagenticDecision::parse(&manager_text)?;
+            let decision = MagenticDecision::parse(manager_text)?;
 
             match decision {
                 MagenticDecision::Delegate {

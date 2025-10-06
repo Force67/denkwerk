@@ -7,7 +7,10 @@ use std::{
 };
 
 use handlebars::Handlebars;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use tokio::time;
 
 use crate::{
     functions::{FunctionRegistry, ToolChoice},
@@ -37,6 +40,8 @@ pub enum AgentError {
     NoAgentsRegistered,
     #[error("manager produced invalid decision: {0}")]
     InvalidManagerDecision(String),
+    #[error("provider call timed out")]
+    ProviderTimeout,
     #[error(transparent)]
     Provider(#[from] LLMError),
 }
@@ -204,12 +209,59 @@ pub enum AgentAction {
     Complete { message: Option<String> },
 }
 
+// Natural-language cues for handoff/complete
+static RE_HANDOFF: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?ix)
+        \b
+        (?:hand[\s-]*off|handoff|transfer|delegate|connect|route)\b
+        (?:[^A-Za-z0-9@]+(?:to|with)\b)?
+        [^A-Za-z0-9@]*    # optional punctuation/space
+        (?:agent|assistant|team|specialist|@)?\s*
+        (?P<target>[A-Za-z0-9_.\- ]{1,64})
+        "
+    )
+    .unwrap()
+});
+
+static RE_COMPLETE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(done|complete|completed|finish(?:ed)?|that'?s all|all set|nothing further)\b").unwrap());
+
+fn normalize_agent_key(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
 impl AgentAction {
     fn from_response(content: &str) -> Self {
+        // Try JSON parsing first (handles both pure JSON and mixed content)
         if let Some(action) = Self::parse_json_block(content) {
             return action;
         }
 
+        // NL handoff (e.g., "handoff to Travel", "transfer to @billing")
+        if let Some(caps) = RE_HANDOFF.captures(content) {
+            if let Some(m) = caps.name("target") {
+                let mut target = m.as_str().trim().to_string();
+                target = target
+                    .trim_matches(|c: char| c == '@' || c.is_ascii_punctuation())
+                    .to_string();
+                if !target.is_empty() {
+                    return AgentAction::HandOff {
+                        target,
+                        message: None,
+                    };
+                }
+            }
+        }
+
+        // NL completion (e.g., "done", "that's all")
+        if RE_COMPLETE.is_match(content) {
+            let msg = content.trim();
+            let message = if msg.is_empty() { None } else { Some(msg.to_string()) };
+            return AgentAction::Complete { message };
+        }
+
+        // Default to responding with the entire content
         let trimmed = content.trim();
         if trimmed.is_empty() {
             return AgentAction::Respond {
@@ -223,14 +275,26 @@ impl AgentAction {
     }
 
     fn parse_json_block(content: &str) -> Option<Self> {
-        if let Ok(action) = serde_json::from_str::<ActionEnvelope>(content) {
+        // Try parsing the entire content as JSON first
+        if let Ok(action) = serde_json::from_str::<ActionEnvelope>(content.trim()) {
             return Some(action.into());
         }
 
-        let fenced = extract_json_from_fenced_block(content)?;
-        serde_json::from_str::<ActionEnvelope>(&fenced)
-            .ok()
-            .map(Into::into)
+        // Try extracting JSON from fenced code blocks
+        if let Some(fenced) = extract_json_from_fenced_block(content) {
+            if let Ok(action) = serde_json::from_str::<ActionEnvelope>(&fenced) {
+                return Some(action.into());
+            }
+        }
+
+        // Try extracting JSON objects from mixed text content
+        if let Some(json_str) = extract_json_from_mixed_content(content) {
+            if let Ok(action) = serde_json::from_str::<ActionEnvelope>(&json_str) {
+                return Some(action.into());
+            }
+        }
+
+        None
     }
 
     pub fn message(&self) -> Option<&str> {
@@ -285,6 +349,59 @@ fn extract_json_from_fenced_block(content: &str) -> Option<String> {
     Some(body[..end].trim().to_string())
 }
 
+// Quote/escape-aware extractor: last complete top-level JSON object
+fn extract_json_from_mixed_content(content: &str) -> Option<String> {
+    let bytes = content.as_bytes();
+    let mut start_pos = None;
+    let mut end_pos = None;
+    let mut depth: i32 = 0;
+
+    let mut in_str = false;
+    let mut escaped = false;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        } else if b == b'"' {
+            in_str = true;
+            continue;
+        }
+
+        match b {
+            b'{' => {
+                if depth == 0 {
+                    start_pos = Some(i);
+                }
+                depth += 1;
+            }
+            b'}' => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 && start_pos.is_some() {
+                        end_pos = Some(i + 1);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let (Some(s), Some(e)) = (start_pos, end_pos) {
+        let candidate = &content[s..e];
+        if candidate.contains("\"action\"") {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
 #[derive(Debug)]
 pub(crate) struct AgentTurn {
     pub(crate) action: AgentAction,
@@ -308,6 +425,8 @@ pub struct HandoffOrchestrator {
     model: String,
     agents: HashMap<String, Agent>,
     max_handoffs: Option<usize>,
+    max_rounds: usize,
+    llm_timeout_ms: u64,
     event_callback: Option<Arc<dyn Fn(&HandoffEvent) + Send + Sync>>,
 }
 
@@ -318,12 +437,96 @@ impl HandoffOrchestrator {
             model: model.into(),
             agents: HashMap::new(),
             max_handoffs: Some(4),
+            max_rounds: 32,
+            llm_timeout_ms: 60_000,
             event_callback: None,
         }
     }
 
     pub fn register_agent(&mut self, agent: Agent) -> Option<Agent> {
-        self.agents.insert(agent.name.clone(), agent)
+        let previous = self.agents.insert(agent.name.clone(), agent);
+        self.refresh_handoff_instructions();
+        previous
+    }
+
+    fn create_handoff_agent(&self, mut agent: Agent) -> Agent {
+        // Kept for API compatibility, but actual roster injection happens in refresh_handoff_instructions()
+        let available_agents: Vec<&str> = self.agents.keys().map(|s| s.as_str()).collect();
+
+        let has_handoff_instructions = agent.instructions.to_lowercase().contains("delegate")
+            || agent.instructions.to_lowercase().contains("hand off")
+            || agent.instructions.to_lowercase().contains("coordinator");
+
+        let handoff_instructions = if has_handoff_instructions {
+            format!(
+                r#"
+{}
+
+Available agents: {}
+
+Just respond naturally - the system handles the handoffs automatically based on what you say."#,
+                agent.instructions,
+                available_agents.join(", ")
+            )
+        } else if available_agents.is_empty() {
+            format!(
+                r#"
+{}
+
+You can respond naturally to the user. When you want to complete the conversation, use: {{"action": "complete", "message": "final response"}}"#,
+                agent.instructions
+            )
+        } else {
+            format!(
+                r#"
+{}
+
+You can respond naturally to the user. The system will automatically detect when you want to:
+- Hand off to another agent (mention "hand off", "transfer", "connect", etc.)
+- Complete the task (mention "complete", "done", "finished", etc.)
+
+Available agents: {}
+
+Just respond naturally - the system handles the handoffs automatically based on what you say."#,
+                agent.instructions,
+                available_agents.join(", ")
+            )
+        };
+
+        agent.instructions = handoff_instructions;
+        agent
+    }
+
+    fn refresh_handoff_instructions(&mut self) {
+        let roster: Vec<String> = self.agents.keys().cloned().collect();
+        for agent in self.agents.values_mut() {
+            let _has_handoff_instructions = agent.instructions.to_lowercase().contains("delegate")
+                || agent.instructions.to_lowercase().contains("hand off")
+                || agent.instructions.to_lowercase().contains("coordinator");
+
+            let appendix = if roster.is_empty() {
+                r#"
+You can respond naturally to the user. When you want to complete the conversation, use: {"action": "complete", "message": "..."}"#
+                    .to_string()
+            } else {
+                format!(
+                    r#"
+
+You can respond naturally to the user. The system will automatically detect when you want to:
+- Hand off to another agent (mention "hand off", "transfer", "connect", etc.)
+- Complete the task (mention "complete", "done", "finished", etc.)
+
+Available agents: {}
+
+Just respond naturally - the system handles the handoffs automatically based on what you say."#,
+                    roster.join(", ")
+                )
+            };
+
+            if !agent.instructions.contains("Available agents:") {
+                agent.instructions = format!("{}\n{}", agent.instructions, appendix);
+            }
+        }
     }
 
     pub fn with_max_handoffs(mut self, max_handoffs: Option<usize>) -> Self {
@@ -331,19 +534,88 @@ impl HandoffOrchestrator {
         self
     }
 
+    pub fn with_max_rounds(mut self, rounds: usize) -> Self {
+        self.max_rounds = rounds;
+        self
+    }
+
+    pub fn with_llm_timeout_ms(mut self, ms: u64) -> Self {
+        self.llm_timeout_ms = ms;
+        self
+    }
+
     pub fn agent(&self, name: &str) -> Option<&Agent> {
         self.agents.get(name)
     }
 
-    pub fn with_event_callback(mut self, callback: impl Fn(&HandoffEvent) + Send + Sync + 'static) -> Self {
+    pub fn with_event_callback(
+        mut self,
+        callback: impl Fn(&HandoffEvent) + Send + Sync + 'static,
+    ) -> Self {
         self.event_callback = Some(Arc::new(callback));
         self
     }
 
     fn emit_event(&self, event: &HandoffEvent) {
         if let Some(callback) = &self.event_callback {
-            callback(event);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (callback)(event)));
         }
+    }
+
+    fn resolve_target(&self, current: &str, raw_target: &str) -> Result<String, AgentError> {
+        let want = normalize_agent_key(raw_target.trim().trim_start_matches('@'));
+        if want.is_empty() {
+            return Err(AgentError::UnknownAgent(raw_target.to_string()));
+        }
+
+        // 1) exact case-insensitive
+        if let Some((k, _)) = self
+            .agents
+            .iter()
+            .find(|(k, _)| normalize_agent_key(k) == want)
+        {
+            if normalize_agent_key(k) == normalize_agent_key(current) {
+                return Err(AgentError::InvalidManagerDecision(
+                    "self handoff not allowed".into(),
+                ));
+            }
+            return Ok(k.to_string());
+        }
+
+        // 2) prefix
+        if let Some((k, _)) = self
+            .agents
+            .iter()
+            .find(|(k, _)| normalize_agent_key(k).starts_with(&want))
+        {
+            if normalize_agent_key(k) == normalize_agent_key(current) {
+                return Err(AgentError::InvalidManagerDecision(
+                    "self handoff not allowed".into(),
+                ));
+            }
+            return Ok(k.to_string());
+        }
+
+        // 3) fuzzy (accept close matches)
+        let mut best: Option<(&String, usize)> = None;
+        for (k, _) in &self.agents {
+            let d = strsim::levenshtein(&want, &normalize_agent_key(k));
+            if best.map_or(true, |(_, bd)| d < bd) {
+                best = Some((k, d));
+            }
+        }
+        if let Some((k, dist)) = best {
+            if dist <= 3 {
+                if normalize_agent_key(k) == normalize_agent_key(current) {
+                    return Err(AgentError::InvalidManagerDecision(
+                        "self handoff not allowed".into(),
+                    ));
+                }
+                return Ok(k.clone());
+            }
+        }
+
+        Err(AgentError::UnknownAgent(raw_target.to_string()))
     }
 
     pub fn session<'a>(
@@ -395,29 +667,49 @@ impl<'a> HandoffSession<'a> {
     pub async fn send(&mut self, user_input: impl Into<String>) -> Result<HandoffTurn, AgentError> {
         self.transcript.push(ChatMessage::user(user_input.into()));
         let mut events = Vec::new();
+        let mut rounds = 0usize;
 
         loop {
+            rounds += 1;
+            if rounds > self.orchestrator.max_rounds {
+                return Err(AgentError::MaxRoundsReached);
+            }
+
             let agent = self
                 .orchestrator
                 .agents
                 .get(&self.active_agent)
                 .ok_or_else(|| AgentError::UnknownAgent(self.active_agent.clone()))?;
 
-            let turn = agent
-                .execute(self.orchestrator.provider.as_ref(), &self.orchestrator.model, &self.transcript)
-                .await?;
+            let fut = agent.execute(
+                self.orchestrator.provider.as_ref(),
+                &self.orchestrator.model,
+                &self.transcript,
+            );
+
+            let turn = match time::timeout(
+                std::time::Duration::from_millis(self.orchestrator.llm_timeout_ms),
+                fut,
+            )
+            .await
+            {
+                Ok(res) => res?,
+                Err(_) => return Err(AgentError::ProviderTimeout),
+            };
 
             match turn.action {
                 AgentAction::Respond { message } => {
-                    let mut assistant = ChatMessage::assistant(message.clone());
-                    assistant.name = Some(agent.name.clone());
-                    self.transcript.push(assistant);
-                    let event = HandoffEvent::Message {
-                        agent: agent.name.clone(),
-                        message: message.clone(),
-                    };
-                    self.orchestrator.emit_event(&event);
-                    events.push(event);
+                    if !message.trim().is_empty() {
+                        let mut assistant = ChatMessage::assistant(message.clone());
+                        assistant.name = Some(agent.name.clone());
+                        self.transcript.push(assistant);
+                        let event = HandoffEvent::Message {
+                            agent: agent.name.clone(),
+                            message: message.clone(),
+                        };
+                        self.orchestrator.emit_event(&event);
+                        events.push(event);
+                    }
 
                     return Ok(HandoffTurn {
                         reply: Some(message),
@@ -432,40 +724,40 @@ impl<'a> HandoffSession<'a> {
                         *limit -= 1;
                     }
 
-                    if let Some(message) = message {
-                        let mut assistant = ChatMessage::assistant(message.clone());
+                    if let Some(msg) = message.filter(|m| !m.trim().is_empty()) {
+                        let mut assistant = ChatMessage::assistant(msg.clone());
                         assistant.name = Some(agent.name.clone());
                         self.transcript.push(assistant);
                         let event = HandoffEvent::Message {
                             agent: agent.name.clone(),
-                            message,
+                            message: msg,
                         };
                         self.orchestrator.emit_event(&event);
                         events.push(event);
                     }
 
-                    if !self.orchestrator.agents.contains_key(&target) {
-                        return Err(AgentError::UnknownAgent(target));
-                    }
+                    let resolved = self
+                        .orchestrator
+                        .resolve_target(&self.active_agent, &target)?;
 
                     let event = HandoffEvent::HandOff {
                         from: agent.name.clone(),
-                        to: target.clone(),
+                        to: resolved.clone(),
                     };
                     self.orchestrator.emit_event(&event);
                     events.push(event);
 
-                    self.active_agent = target;
+                    self.active_agent = resolved;
                     continue;
                 }
                 AgentAction::Complete { message } => {
-                    if let Some(message) = message.clone() {
-                        let mut assistant = ChatMessage::assistant(message.clone());
+                    if let Some(msg) = message.clone().filter(|m| !m.trim().is_empty()) {
+                        let mut assistant = ChatMessage::assistant(msg.clone());
                         assistant.name = Some(agent.name.clone());
                         self.transcript.push(assistant);
                         let event = HandoffEvent::Message {
                             agent: agent.name.clone(),
-                            message,
+                            message: msg,
                         };
                         self.orchestrator.emit_event(&event);
                         events.push(event);
@@ -519,6 +811,92 @@ mod tests {
         let content = "Hello there";
         if let AgentAction::Respond { message } = AgentAction::from_response(content) {
             assert_eq!(message, "Hello there");
+        } else {
+            panic!("expected respond action");
+        }
+    }
+
+    #[test]
+    fn parses_json_handoff() {
+        let content =
+            r#"{"action": "handoff", "target": "travel", "message": "Need itinerary help"}"#;
+        if let AgentAction::HandOff { target, message } = AgentAction::from_response(content) {
+            assert_eq!(target, "travel");
+            assert_eq!(message.unwrap(), "Need itinerary help");
+        } else {
+            panic!("expected handoff action");
+        }
+    }
+
+    #[test]
+    fn parses_json_complete() {
+        let content = r#"{"action": "complete", "message": "All done"}"#;
+        if let AgentAction::Complete { message } = AgentAction::from_response(content) {
+            assert_eq!(message.unwrap(), "All done");
+        } else {
+            panic!("expected complete action");
+        }
+    }
+
+    #[test]
+    fn falls_back_to_response_for_plain_text() {
+        let content = "This is just a regular response from the agent.";
+        if let AgentAction::Respond { message } = AgentAction::from_response(content) {
+            assert_eq!(message, content);
+        } else {
+            panic!("expected respond action");
+        }
+    }
+
+    #[test]
+    fn parses_json_from_mixed_content() {
+        let content = r#"Sure, I'll help with that!
+
+{"action": "handoff", "target": "travel", "message": "Please help with travel planning"}"#;
+        if let AgentAction::HandOff { target, message } = AgentAction::from_response(content) {
+            assert_eq!(target, "travel");
+            assert_eq!(message.unwrap(), "Please help with travel planning");
+        } else {
+            panic!("expected handoff action");
+        }
+    }
+
+    #[test]
+    fn nl_handoff_variants() {
+        let samples = [
+            "Can you hand off to Travel?",
+            "please transfer to @billing",
+            "delegate with data scientist",
+            "connect me to Research team",
+        ];
+        for s in samples {
+            if let AgentAction::HandOff { target, .. } = AgentAction::from_response(s) {
+                assert!(
+                    !target.trim().is_empty(),
+                    "target should be present for '{s}'"
+                );
+            } else {
+                panic!("expected NL handoff for '{s}'");
+            }
+        }
+    }
+
+    #[test]
+    fn nl_complete_variants() {
+        for s in ["done", "completed", "that's all", "all set", "we are finished here"] {
+            match AgentAction::from_response(s) {
+                AgentAction::Complete { .. } => {}
+                _ => panic!("expected completion for '{s}'"),
+            }
+        }
+    }
+
+    #[test]
+    fn json_extractor_handles_braces_in_strings() {
+        let content =
+            r#"noise {"action":"respond","message":"brace in value: {ok}"} trailing"#;
+        if let AgentAction::Respond { message } = AgentAction::from_response(content) {
+            assert!(message.contains("brace in value"));
         } else {
             panic!("expected respond action");
         }

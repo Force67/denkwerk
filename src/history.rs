@@ -402,7 +402,8 @@ mod tests {
     #[tokio::test]
     async fn llm_compressor_uses_provider() {
         let provider = Arc::new(StubProvider::new("A concise summary."));
-        let compressor = LLMHistoryCompressor::new(Arc::clone(&provider), "test-model")
+        let provider_trait = provider.clone() as Arc<dyn LLMProvider>;
+        let compressor = LLMHistoryCompressor::new(provider_trait, "test-model")
             .with_max_messages(4)
             .with_retain_messages(2);
 

@@ -7,7 +7,7 @@ use crate::functions::{FunctionRegistry, Tool, ToolCall, ToolChoice};
 
 pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, crate::LLMError>> + Send>>;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     System,

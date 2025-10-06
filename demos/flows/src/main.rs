@@ -1,4 +1,5 @@
 use clap::Parser;
+use colored::Colorize;
 use denkwerk::providers::openrouter::OpenRouter;
 use denkwerk::{
     Agent, ChatMessage, CompletionRequest, ConcurrentOrchestrator, FunctionRegistry,
@@ -6,6 +7,34 @@ use denkwerk::{
     RoundRobinGroupChatManager, SequentialOrchestrator, kernel_function, kernel_module,
 };
 use std::sync::Arc;
+
+fn colorize_agent(agent_name: &str) -> colored::ColoredString {
+    match agent_name.to_lowercase().as_str() {
+        // Sequential demo agents
+        "analyst" => agent_name.bright_blue().bold(),
+        "writer" => agent_name.bright_green().bold(),
+
+        // Concurrent demo agents
+        "physicsexpert" => agent_name.bright_magenta().bold(),
+        "chemistryexpert" => agent_name.bright_cyan().bold(),
+
+        // Group chat demo agents
+        "copywriter" => agent_name.bright_yellow().bold(),
+        "reviewer" => agent_name.bright_red().bold(),
+
+        // Magentic demo agents
+        "researchagent" => agent_name.bright_blue().bold(),
+        "coderagent" => agent_name.bright_green().bold(),
+
+        // Handoff demo agents
+        "concierge" => agent_name.bright_cyan().bold(),
+        "travel" => agent_name.bright_yellow().bold(),
+        "weather" => agent_name.bright_magenta().bold(),
+
+        // Default fallback
+        _ => agent_name.white().bold(),
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "flows-demo")]
@@ -49,6 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("=== Denkwerk Flows Demo ===\n");
 
+    /*
     // 1. Function Calling Demo
     println!("1. Function Calling Demo");
     demo_function_calling(&provider).await?;
@@ -67,12 +97,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Group Chat Demo
     println!("4. Group Chat Demo");
     demo_group_chat(&provider).await?;
-    println!();
+    println!();*/
 
     // 5. Magentic Demo
-    println!("5. Magentic Demo");
-    demo_magentic(&provider).await?;
-    println!();
+    //println!("5. Magentic Demo");
+    //demo_magentic(&provider).await?;
+    //println!();
 
     // 6. Handoff Demo
     println!("6. Handoff Demo");
@@ -89,16 +119,49 @@ async fn demo_function_calling(provider: &Arc<dyn LLMProvider>) -> Result<(), Bo
     registry.register(greet_kernel());
     Arc::new(Calculator).register_kernel_functions(&mut registry);
 
-    let messages = vec![
+    let mut messages = vec![
         ChatMessage::system("You are an assistant that must use tools whenever possible."),
         ChatMessage::user("Say hello to Alice and compute 10.5 + 7.25 using the tools."),
     ];
 
-    let request = CompletionRequest::new("openai/gpt-4o-mini", messages)
+    let mut request = CompletionRequest::new("openai/gpt-4o-mini", messages.clone())
         .with_function_registry(&registry);
 
-    let response = provider.complete(request).await?;
+    let mut response = provider.complete(request).await?;
     println!("Assistant: {}", response.message.text().unwrap_or("<tool call>"));
+    messages.push(response.message.clone());
+
+    // Handle tool calls
+    if !response.message.tool_calls.is_empty() {
+        // Execute tool calls in parallel but preserve order for LLM expectations
+        use futures_util::future::join_all;
+
+        let tool_futures: Vec<_> = response.message.tool_calls.iter()
+            .map(|call| registry.invoke(&call.function))
+            .collect();
+
+        let results = join_all(tool_futures).await;
+
+        // Process results in original call order
+        for (call, result) in response.message.tool_calls.iter().zip(results) {
+            let result = result?;
+            let payload = serde_json::to_string(&result)?;
+            let tool_id = call
+                .id
+                .clone()
+                .unwrap_or_else(|| call.function.name.clone());
+            println!("tool {} -> {}", tool_id, payload);
+            messages.push(ChatMessage::tool(tool_id, payload));
+        }
+
+        request = CompletionRequest::new("openai/gpt-4o-mini", messages.clone())
+            .with_function_registry(&registry);
+        response = provider.complete(request).await?;
+        println!(
+            "Assistant (final): {}",
+            response.message.text().unwrap_or("<no response>")
+        );
+    }
 
     Ok(())
 }
@@ -126,11 +189,11 @@ async fn demo_sequential(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn 
     for event in &run.events {
         match event {
             denkwerk::SequentialEvent::Step { agent, output } => {
-                println!("{agent}: {output}");
+                println!("{}: {}", colorize_agent(agent), output);
             }
             denkwerk::SequentialEvent::Completed { agent, output } => {
                 if let Some(result) = output {
-                    println!("{agent} finalized: {result}");
+                    println!("{} finalized: {}", colorize_agent(agent), result);
                 }
             }
         }
@@ -158,7 +221,7 @@ async fn demo_concurrent(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn 
     let run = orchestrator.run("What is temperature?").await?;
 
     for result in &run.results {
-        println!("[{}] {}", result.agent, result.output.as_deref().unwrap_or("(no output)"));
+        println!("[{}] {}", colorize_agent(&result.agent), result.output.as_deref().unwrap_or("(no output)"));
     }
 
     Ok(())
@@ -186,11 +249,11 @@ async fn demo_group_chat(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn 
     for event in &run.events {
         match event {
             denkwerk::GroupChatEvent::AgentMessage { agent, message } => {
-                println!("{agent}: {message}");
+                println!("{}: {}", colorize_agent(agent), message);
             }
             denkwerk::GroupChatEvent::AgentCompletion { agent, message } => {
                 if let Some(text) = message {
-                    println!("{agent} completed: {text}");
+                    println!("{} completed: {}", colorize_agent(agent), text);
                 }
             }
             _ => {}
@@ -205,35 +268,50 @@ async fn demo_magentic(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn st
 
     let research = Agent::from_string(
         "ResearchAgent",
-        "Research and provide information.",
+        "Research and provide information. When you have gathered relevant data, respond with your findings and suggest next steps.",
     )
     .with_description("Surfaces information.");
 
     let coder = Agent::from_string(
         "CoderAgent",
-        "Analyze data and structure results.",
+        "Analyze data and structure results. When you have completed your analysis, provide a clear summary and conclusion.",
     )
     .with_description("Structures results.");
 
     let mut orchestrator = MagenticOrchestrator::new(provider.clone(), "openai/gpt-4o-mini", manager)
-        .with_max_rounds(5);
+        .with_max_rounds(10);
 
     orchestrator.register_agent(research)?;
     orchestrator.register_agent(coder)?;
 
-    let brief = "Compare energy efficiency of ResNet-50 and BERT-base models.";
+    let brief = "Compare the training energy efficiency of ResNet-50 and BERT-base models. Focus on key differences and provide a brief analysis.";
 
     let run = orchestrator.run(brief).await?;
 
     for event in run.events {
         match event {
+            denkwerk::MagenticEvent::ManagerMessage { message } => {
+                println!("{}: {}", colorize_agent("manager"), message);
+            }
+            denkwerk::MagenticEvent::ManagerDelegation { target, instructions, progress_note } => {
+                println!("{}", format!("{} delegates to {}: {}", colorize_agent("manager"), colorize_agent(&target), instructions).cyan().bold());
+                if let Some(note) = progress_note {
+                    println!("{}: {}", colorize_agent("manager"), note);
+                }
+            }
             denkwerk::MagenticEvent::AgentMessage { agent, message } => {
-                println!("{agent}: {message}");
+                println!("{}: {}", colorize_agent(&agent), message);
+            }
+            denkwerk::MagenticEvent::AgentCompletion { agent, message } => {
+                if let Some(msg) = message {
+                    println!("{} completes: {}", colorize_agent(&agent), msg);
+                } else {
+                    println!("{} completes task", colorize_agent(&agent));
+                }
             }
             denkwerk::MagenticEvent::Completed { message } => {
-                println!("Final: {message}");
+                println!("{}: {}", "🎉 Final Result".bright_green().bold(), message);
             }
-            _ => {}
         }
     }
 
@@ -243,21 +321,33 @@ async fn demo_magentic(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn st
 async fn demo_handoff(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn std::error::Error>> {
     let weather_agent = Agent::from_string(
         "weather",
-        "Provide weather briefings. Reply with JSON: {\"action\":\"respond\",\"message\":\"<guidance>\"} or {\"action\":\"complete\",\"message\":\"<remark>\"}",
+        "You are the Weather Specialist. Provide detailed weather forecasts, temperature ranges, and packing recommendations for specific destinations and dates. Focus only on weather information.",
     );
 
     let travel_agent = Agent::from_string(
         "travel",
-        "Plan travel itineraries. Can handoff to weather agent.",
+        r#"You are a Travel Planner. Focus on flights, hotels, and transportation. Provide specific recommendations and booking advice.
+
+When you receive a travel planning request that mentions weather information, first provide your travel recommendations, then hand off to the weather specialist:
+
+{"action": "handoff", "target": "weather", "message": "Please provide weather information for this trip"}
+
+If weather is not mentioned, complete the travel planning with {"action": "complete", "message": "Travel planning complete"}."#,
     );
 
     let concierge = Agent::from_string(
         "concierge",
-        "Coordinate travel planning. Can handoff to travel or weather agents.",
+        r#"You are a Concierge Coordinator. Your role is to coordinate travel planning - DO NOT provide specific flight, hotel, or weather details yourself. Instead, delegate to the appropriate specialists for detailed information.
+
+When you receive a travel planning request, start by handing off to the travel agent for the main planning:
+
+{"action": "handoff", "target": "travel", "message": "Please help plan this business trip including flights, hotels, and itinerary"}
+
+The travel agent will handle weather information by coordinating with the weather specialist if needed. Do not send multiple handoff commands - just start with the travel agent."#,
     );
 
     let mut orchestrator = HandoffOrchestrator::new(provider.clone(), "openai/gpt-4o-mini")
-        .with_max_handoffs(Some(3));
+        .with_max_handoffs(Some(5));
 
     orchestrator.register_agent(concierge);
     orchestrator.register_agent(travel_agent);
@@ -265,20 +355,31 @@ async fn demo_handoff(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn std
 
     let mut session = orchestrator.session("concierge")?;
 
-    let user_message = "Help me plan a trip to Paris next week.";
+    let user_message = "I need to plan a business trip to Paris from Denver. I'll be there for 3 days next week. Can you help me with flights, hotels, and weather information?";
     println!("User: {user_message}");
 
     let turn = session.send(user_message).await?;
 
+    let mut last_agent_message: Option<(String, String)> = None;
+
     for event in &turn.events {
         match event {
             denkwerk::HandoffEvent::Message { agent, message } => {
-                println!("{agent}: {message}");
+                println!("{}: {}", colorize_agent(agent), message);
+                last_agent_message = Some((agent.clone(), message.clone()));
             }
             denkwerk::HandoffEvent::HandOff { from, to } => {
-                println!("[handoff] {from} -> {to}");
+                // Show the agent's reasoning for the handoff in color
+                if let Some((agent, reasoning)) = &last_agent_message {
+                    if agent == from {
+                        println!("{}", format!("🤔 {} thinks: \"{reasoning}\"", colorize_agent(agent)).cyan().bold());
+                    }
+                }
+                println!("{}", format!("🔄 [handoff] {} -> {}", colorize_agent(from), colorize_agent(to)).yellow().bold());
             }
-            _ => {}
+            denkwerk::HandoffEvent::Completed { agent } => {
+                println!("{} completed the task", colorize_agent(agent));
+            }
         }
     }
 

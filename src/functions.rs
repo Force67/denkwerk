@@ -313,18 +313,23 @@ pub type DynKernelFunction = Arc<dyn KernelFunction>;
 #[derive(Default)]
 pub struct FunctionRegistry {
     functions: BTreeMap<String, DynKernelFunction>,
+    cached_definitions: std::sync::Mutex<Option<Vec<FunctionDefinition>>>,
+    cached_tools: std::sync::Mutex<Option<Vec<Tool>>>,
 }
 
 impl FunctionRegistry {
     pub fn new() -> Self {
         Self {
             functions: BTreeMap::new(),
+            cached_definitions: std::sync::Mutex::new(None),
+            cached_tools: std::sync::Mutex::new(None),
         }
     }
 
     pub fn register(&mut self, function: DynKernelFunction) {
         let name = function.definition().name;
         self.functions.insert(name, function);
+        self.invalidate_cache();
     }
 
     pub fn register_all<I>(&mut self, functions: I)
@@ -336,22 +341,39 @@ impl FunctionRegistry {
         }
     }
 
+    fn invalidate_cache(&mut self) {
+        *self.cached_definitions.lock().unwrap() = None;
+        *self.cached_tools.lock().unwrap() = None;
+    }
+
     pub fn get(&self, name: &str) -> Option<&DynKernelFunction> {
         self.functions.get(name)
     }
 
     pub fn definitions(&self) -> Vec<FunctionDefinition> {
-        self.functions
+        let mut cache = self.cached_definitions.lock().unwrap();
+        if let Some(ref defs) = *cache {
+            return defs.clone();
+        }
+        let defs: Vec<FunctionDefinition> = self.functions
             .values()
             .map(|function| function.definition())
-            .collect()
+            .collect();
+        *cache = Some(defs.clone());
+        defs
     }
 
     pub fn tools(&self) -> Vec<Tool> {
-        self.definitions()
+        let mut cache = self.cached_tools.lock().unwrap();
+        if let Some(ref tools) = *cache {
+            return tools.clone();
+        }
+        let tools: Vec<Tool> = self.definitions()
             .into_iter()
             .map(|definition| definition.into())
-            .collect()
+            .collect();
+        *cache = Some(tools.clone());
+        tools
     }
 
     pub async fn invoke(&self, call: &FunctionCall) -> Result<Value, LLMError> {

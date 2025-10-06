@@ -1,11 +1,20 @@
 use std::sync::Arc;
 
+use colored::Colorize;
 use denkwerk::{
     Agent, AgentError, HandoffEvent, HandoffOrchestrator, HandoffSession, HandoffTurn,
     LLMProvider,
 };
 use denkwerk::providers::openrouter::OpenRouter;
-use serde_json::json;
+
+fn colorize_agent(agent_name: &str) -> colored::ColoredString {
+    match agent_name.to_lowercase().as_str() {
+        "concierge" => agent_name.bright_cyan().bold(),
+        "travel" => agent_name.bright_yellow().bold(),
+        "weather" => agent_name.bright_magenta().bold(),
+        _ => agent_name.white().bold(),
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,42 +22,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let weather_agent = Agent::from_string(
         "weather",
-        r#"
-You are the Weather Advisor. Offer short weather briefings and packing suggestions based on the destination and travel dates.
-
-Reply with JSON only:
-- {"action":"respond","message":"<weather guidance>"}
-- {"action":"complete","message":"<closing remark>"}
-
-If you do not have live data, share typical seasonal expectations and remind the traveler to verify conditions closer to departure.
-"#,
+        "You are the Weather Advisor. Provide weather briefings and packing suggestions for destinations. Share typical seasonal expectations and remind travelers to verify current conditions.",
     );
 
-    let travel_agent = Agent::from_handlebars_file(
+    let travel_agent = Agent::from_string(
         "travel",
-        "examples/prompts/travel_agent.hbs",
-        &json!({
-            "name": "Travel Planner",
-            "services": [
-                "Flight research",
-                "Hotel suggestions",
-                "Ground transportation advice",
-            ],
-            "weather_agent": "weather",
-        }),
-    )?;
+        "You are a Travel Planner. Research flights, suggest hotels, and provide transportation advice. Create concise travel itineraries with key details and reminders.",
+    );
 
-    let concierge = Agent::from_handlebars_file(
+    let concierge = Agent::from_string(
         "concierge",
-        "examples/prompts/front_desk_agent.hbs",
-        &json!({
-            "name": "Concierge Coordinator",
-            "agents": [
-                {"id": "travel", "description": "Designs full travel itineraries"},
-                {"id": "weather", "description": "Summarizes expected weather"},
-            ],
-        }),
-    )?;
+        "You are a Concierge Coordinator. Help users with travel planning requests. Coordinate between travel and weather specialists as needed.",
+    );
 
     let mut orchestrator = HandoffOrchestrator::new(provider, "openai/gpt-4o-mini")
         .with_max_handoffs(Some(4));
@@ -90,16 +75,25 @@ async fn run_demo(session: &mut HandoffSession<'_>) -> Result<(), AgentError> {
 }
 
 fn render_turn(turn: &HandoffTurn) {
+    let mut last_agent_message: Option<(String, String)> = None;
+
     for event in &turn.events {
         match event {
             HandoffEvent::Message { agent, message } => {
-                println!("{agent}: {message}");
+                println!("{}: {}", colorize_agent(agent), message);
+                last_agent_message = Some((agent.clone(), message.clone()));
             }
             HandoffEvent::HandOff { from, to } => {
-                println!("[handoff] {from} -> {to}");
+                // Show the agent's reasoning for the handoff in color
+                if let Some((agent, reasoning)) = &last_agent_message {
+                    if agent == from {
+                        println!("{}", format!("🤔 {} thinks: \"{reasoning}\"", colorize_agent(agent)).cyan().bold());
+                    }
+                }
+                println!("{}", format!("🔄 [handoff] {} -> {}", colorize_agent(from), colorize_agent(to)).yellow().bold());
             }
             HandoffEvent::Completed { agent } => {
-                println!("[completed by {agent}]");
+                println!("{}", format!("[completed by {}]", colorize_agent(agent)).green().bold());
             }
         }
     }
