@@ -9,6 +9,7 @@ use crate::{
 };
 
 use super::handoffflow::AgentAction;
+use crate::shared_state::SharedStateContext;
 
 #[derive(Debug, Clone)]
 pub enum ConcurrentEvent {
@@ -34,6 +35,7 @@ pub struct ConcurrentOrchestrator {
     model: String,
     agents: Vec<Agent>,
     event_callback: Option<Arc<dyn Fn(&ConcurrentEvent) + Send + Sync>>,
+    shared_state: Option<Arc<dyn SharedStateContext>>,
 }
 
 impl ConcurrentOrchestrator {
@@ -43,6 +45,7 @@ impl ConcurrentOrchestrator {
             model: model.into(),
             agents: Vec::new(),
             event_callback: None,
+            shared_state: None,
         }
     }
 
@@ -61,6 +64,15 @@ impl ConcurrentOrchestrator {
     pub fn with_event_callback(mut self, callback: impl Fn(&ConcurrentEvent) + Send + Sync + 'static) -> Self {
         self.event_callback = Some(Arc::new(callback));
         self
+    }
+
+    pub fn with_shared_state(mut self, shared_state: Arc<dyn SharedStateContext>) -> Self {
+        self.shared_state = Some(shared_state);
+        self
+    }
+
+    pub fn shared_state(&self) -> Option<&Arc<dyn SharedStateContext>> {
+        self.shared_state.as_ref()
     }
 
     fn emit_event(&self, event: &ConcurrentEvent) {

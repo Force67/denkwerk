@@ -7,6 +7,7 @@ use crate::{
 };
 
 use super::handoffflow::AgentAction;
+use crate::shared_state::SharedStateContext;
 
 pub trait GroupChatManager: Send + Sync {
     /// Called before the orchestration starts so the manager can reset its state.
@@ -130,6 +131,7 @@ pub struct GroupChatOrchestrator<M: GroupChatManager + 'static> {
     manager: M,
     event_callback: Option<Arc<dyn Fn(&GroupChatEvent) + Send + Sync>>,
     user_input_callback: Option<Arc<dyn Fn(&[ChatMessage]) -> Option<String> + Send + Sync>>,
+    shared_state: Option<Arc<dyn SharedStateContext>>,
 }
 
 impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
@@ -141,6 +143,7 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
             manager,
             event_callback: None,
             user_input_callback: None,
+            shared_state: None,
         }
     }
 
@@ -159,6 +162,15 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
     pub fn with_event_callback(mut self, callback: impl Fn(&GroupChatEvent) + Send + Sync + 'static) -> Self {
         self.event_callback = Some(Arc::new(callback));
         self
+    }
+
+    pub fn with_shared_state(mut self, shared_state: Arc<dyn SharedStateContext>) -> Self {
+        self.shared_state = Some(shared_state);
+        self
+    }
+
+    pub fn shared_state(&self) -> Option<&Arc<dyn SharedStateContext>> {
+        self.shared_state.as_ref()
     }
 
     pub fn with_user_input_callback(

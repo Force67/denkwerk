@@ -7,6 +7,7 @@
  pub mod plugins;
  pub mod history;
  pub mod eval;
+ pub mod shared_state;
 
 pub use error::LLMError;
 pub use providers::LLMProvider;
@@ -50,6 +51,13 @@ pub use flows::group_chat::{
     GroupChatOrchestrator,
     GroupChatRun,
     RoundRobinGroupChatManager,
+};
+pub use shared_state::{
+    InMemorySharedStateStore,
+    SharedStateContext,
+    SharedStateContextExt,
+    SharedStateEntry,
+    SharedStateExtensions,
 };
  pub use plugins::math;
  pub use schemars::JsonSchema;

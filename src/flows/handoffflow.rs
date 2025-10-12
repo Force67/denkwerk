@@ -16,6 +16,8 @@ use crate::{
     Agent, AgentError, LLMError, LLMProvider,
 };
 
+use crate::shared_state::SharedStateContext;
+
 /// What to do if a rule matches
 #[derive(Debug, Clone)]
 pub struct HandoffDirective {
@@ -329,6 +331,7 @@ pub struct HandoffOrchestrator {
     max_rounds: usize,
     llm_timeout_ms: u64,
     event_callback: Option<Arc<dyn Fn(&HandoffEvent) + Send + Sync>>,
+    shared_state: Option<Arc<dyn SharedStateContext>>,
 }
 
 impl HandoffOrchestrator {
@@ -343,6 +346,7 @@ impl HandoffOrchestrator {
             max_rounds: 32,
             llm_timeout_ms: 60_000,
             event_callback: None,
+            shared_state: None,
         }
     }
 
@@ -479,6 +483,15 @@ Just respond naturally - the system handles the handoffs automatically based on 
     ) -> Self {
         self.event_callback = Some(Arc::new(callback));
         self
+    }
+
+    pub fn with_shared_state(mut self, shared_state: Arc<dyn SharedStateContext>) -> Self {
+        self.shared_state = Some(shared_state);
+        self
+    }
+
+    pub fn shared_state(&self) -> Option<&Arc<dyn SharedStateContext>> {
+        self.shared_state.as_ref()
     }
 
     fn emit_event(&self, event: &HandoffEvent) {

@@ -13,6 +13,7 @@ use crate::{
 };
 
 use super::handoffflow::AgentAction;
+use crate::shared_state::SharedStateContext;
 
 /// Guides the multi-agent collaboration by emitting structured delegation commands.
 #[derive(Clone)]
@@ -168,6 +169,7 @@ pub struct MagenticOrchestrator {
     agents: HashMap<String, Agent>,
     max_rounds: usize,
     event_callback: Option<Arc<dyn Fn(&MagenticEvent) + Send + Sync>>,
+    shared_state: Option<Arc<dyn SharedStateContext>>,
 }
 
 impl MagenticOrchestrator {
@@ -184,6 +186,7 @@ impl MagenticOrchestrator {
             agents: HashMap::new(),
             max_rounds: 12,
             event_callback: None,
+            shared_state: None,
         }
     }
 
@@ -207,6 +210,15 @@ impl MagenticOrchestrator {
     pub fn with_event_callback(mut self, callback: impl Fn(&MagenticEvent) + Send + Sync + 'static) -> Self {
         self.event_callback = Some(Arc::new(callback));
         self
+    }
+
+    pub fn with_shared_state(mut self, shared_state: Arc<dyn SharedStateContext>) -> Self {
+        self.shared_state = Some(shared_state);
+        self
+    }
+
+    pub fn shared_state(&self) -> Option<&Arc<dyn SharedStateContext>> {
+        self.shared_state.as_ref()
     }
 
     fn emit_event(&self, event: &MagenticEvent) {
