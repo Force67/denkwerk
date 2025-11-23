@@ -1,0 +1,113 @@
+version: 0.1
+metadata:
+  name: sample_flow
+  description: Demo agent flow
+  tags: [demo, routing]
+
+agents:
+  - id: support_agent
+    model: openai/gpt-4o
+    name: Support Agent
+    system_prompt: prompts/support.md
+    tools: [search_tool, ticket_tool]
+    defaults:
+      temperature: 0.3
+      max_tokens: 512
+      retry: { max: 2, backoff_ms: 500 }
+  - id: router
+    model: openai/gpt-4o-mini
+    description: Routes intents to the right path.
+
+tools:
+  - id: search_tool
+    kind: http
+    spec: tools/search.json
+  - id: ticket_tool
+    kind: internal
+    function: create_ticket
+
+prompts:
+  - id: classify_prompt
+    file: prompts/classify.md
+    description: Intent classifier
+  - id: fallback_prompt
+    file: prompts/fallback.md
+
+flows:
+  - id: main
+    entry: n_start
+    nodes:
+      - id: n_start
+        type: input
+        outputs:
+          - label: out
+
+      - id: n_route
+        type: decision
+        name: route intent
+        prompt: classify_prompt
+        outputs:
+          - label: support
+            condition: "intent == 'support'"
+          - label: sales
+            condition: "intent == 'sales'"
+          - label: fallback
+            condition: else
+
+      - id: n_support
+        type: agent
+        agent: support_agent
+        inputs:
+          - from: n_route/support
+        outputs:
+          - label: done
+
+      - id: n_sales
+        type: subflow
+        flow: sales_flow
+        inputs:
+          - from: n_route/sales
+        outputs:
+          - label: done
+
+      - id: n_fallback
+        type: agent
+        agent: support_agent
+        prompt: fallback_prompt
+        inputs:
+          - from: n_route/fallback
+        outputs:
+          - label: done
+
+      - id: n_merge
+        type: merge
+        name: converge
+        inputs:
+          - from: n_support/done
+          - from: n_sales/done
+          - from: n_fallback/done
+        outputs:
+          - label: out
+
+      - id: n_output
+        type: output
+        inputs:
+          - from: n_merge/out
+
+    edges:
+      - from: n_start/out
+        to: n_route
+      - from: n_route/support
+        to: n_support
+      - from: n_route/sales
+        to: n_sales
+      - from: n_route/fallback
+        to: n_fallback
+      - from: n_support/done
+        to: n_merge
+      - from: n_sales/done
+        to: n_merge
+      - from: n_fallback/done
+        to: n_merge
+      - from: n_merge/out
+        to: n_output

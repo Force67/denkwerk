@@ -25,6 +25,9 @@ strsim = "0.10"
  tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
 clap = { version = "4.0", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
+serde_yaml = "0.9"
+iced = { version = "0.12", features = ["canvas", "tokio"] }
+iced_futures = "0.12"
 
 [[bin]]
 name = "handoff-eval"

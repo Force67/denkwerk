@@ -28,6 +28,25 @@ pub use flows::handoffflow::{
     HandoffSession,
     HandoffTurn,
 };
+pub use flows::spec::{
+    AgentDefinition as FlowAgentDefinition,
+    CallSettings as FlowCallSettings,
+    DecisionStrategy,
+    FlowDefinition,
+    FlowDocument,
+    FlowEdge,
+    FlowMetadata,
+    FlowNode,
+    NodeBase as FlowNodeBase,
+    FlowNodeKind,
+    FlowSchemaError,
+    NodeInput,
+    NodeLayout,
+    NodeOutput,
+    PromptDefinition as FlowPromptDefinition,
+    RetryPolicy as FlowRetryPolicy,
+    ToolDefinition as FlowToolDefinition,
+};
 pub use flows::magentic::{
     MagenticDecision,
     MagenticEvent,

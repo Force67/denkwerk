@@ -260,11 +260,11 @@ impl<'a, C: SharedStateContext + ?Sized> SharedStateExtensions<'a, C> {
 
 /// Extension trait to add convenience methods to any SharedStateContext
 pub trait SharedStateContextExt: SharedStateContext {
-    fn extensions(&self) -> SharedStateExtensions<Self>;
+    fn extensions(&self) -> SharedStateExtensions<'_, Self>;
 }
 
 impl<C: SharedStateContext> SharedStateContextExt for C {
-    fn extensions(&self) -> SharedStateExtensions<Self> {
+    fn extensions(&self) -> SharedStateExtensions<'_, Self> {
         SharedStateExtensions::new(self)
     }
 }
