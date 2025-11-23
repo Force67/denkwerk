@@ -9,6 +9,7 @@ use crate::LLMError;
 pub mod openai;
 pub mod openrouter;
 pub mod scripted;
+pub mod azure_openai;
 
 #[async_trait]
 pub trait LLMProvider: Send + Sync {

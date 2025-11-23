@@ -211,6 +211,7 @@ impl Agent {
         let response = active_provider.complete(request).await?;
         let content = response.message.text().unwrap_or_default();
         let tool_calls = response.message.tool_calls.clone();
+        let usage = response.usage;
 
         let action = if !tool_calls.is_empty() {
             // If there are tool calls, execute them and use the result
@@ -237,10 +238,9 @@ impl Agent {
             AgentAction::from_response(content)
         };
 
-        Ok(AgentTurn { action, tool_calls })
+        Ok(AgentTurn { action, tool_calls, usage })
     }
 }
-
 
 
 

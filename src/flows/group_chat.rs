@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     agents::{Agent, AgentError},
+    metrics::{AgentMetrics, ExecutionTimer, MetricsCollector, WithMetrics},
     types::ChatMessage,
     LLMProvider,
 };
@@ -122,6 +123,7 @@ pub struct GroupChatRun {
     pub events: Vec<GroupChatEvent>,
     pub transcript: Vec<ChatMessage>,
     pub rounds: usize,
+    pub metrics: Option<AgentMetrics>,
 }
 
 pub struct GroupChatOrchestrator<M: GroupChatManager + 'static> {
@@ -132,6 +134,7 @@ pub struct GroupChatOrchestrator<M: GroupChatManager + 'static> {
     event_callback: Option<Arc<dyn Fn(&GroupChatEvent) + Send + Sync>>,
     user_input_callback: Option<Arc<dyn Fn(&[ChatMessage]) -> Option<String> + Send + Sync>>,
     shared_state: Option<Arc<dyn SharedStateContext>>,
+    metrics_collector: Option<Arc<dyn MetricsCollector>>,
 }
 
 impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
@@ -144,6 +147,7 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
             event_callback: None,
             user_input_callback: None,
             shared_state: None,
+            metrics_collector: None,
         }
     }
 
@@ -181,6 +185,11 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
         self
     }
 
+    pub fn with_metrics_collector(mut self, collector: Arc<dyn MetricsCollector>) -> Self {
+        self.metrics_collector = Some(collector);
+        self
+    }
+
     fn emit_event(&self, event: &GroupChatEvent) {
         if let Some(callback) = &self.event_callback {
             callback(event);
@@ -197,6 +206,11 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
         let mut events = Vec::new();
         let mut final_output = None;
         let mut rounds = 0usize;
+        let execution_timer = ExecutionTimer::new();
+        let mut metrics = self
+            .metrics_collector
+            .as_ref()
+            .map(|_| AgentMetrics::new("group_chat".to_string()));
 
         self.manager.on_start(&self.agents);
 
@@ -250,9 +264,38 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
 
             let turn = agent
                 .execute(self.provider.as_ref(), &self.model, &transcript)
-                .await?;
+                .await;
+
+            let turn = match turn {
+                Ok(turn) => turn,
+                Err(err) => {
+                    if let (Some(ref mut m), Some(collector)) = (&mut metrics, &self.metrics_collector) {
+                        m.record_error(&err);
+                        m.execution.total_duration = execution_timer.elapsed();
+                        m.finalize(false, final_output.as_ref().map(|s| s.len()).unwrap_or(0), rounds);
+                        collector.record_metrics(m.clone());
+                    }
+                    return Err(AgentError::Provider(err));
+                }
+            };
 
             rounds += 1;
+
+            if let (Some(ref mut m), Some(usage)) = (&mut metrics, turn.usage.as_ref()) {
+                let input_cost = m.token_usage.cost_per_input_token;
+                let output_cost = m.token_usage.cost_per_output_token;
+                m.record_token_usage(usage, input_cost, output_cost);
+            }
+
+            if let Some(ref mut m) = metrics {
+                for tool_call in &turn.tool_calls {
+                    m.record_function_call(
+                        &tool_call.function.name,
+                        execution_timer.elapsed(),
+                        true,
+                    );
+                }
+            }
 
             match turn.action {
                 AgentAction::Respond { message } => {
@@ -292,11 +335,25 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
             }
         }
 
+        let metrics = if let (Some(mut metrics), Some(collector)) = (metrics, &self.metrics_collector) {
+            metrics.execution.total_duration = execution_timer.elapsed();
+            metrics.finalize(
+                final_output.is_some(),
+                final_output.as_ref().map(|s| s.len()).unwrap_or(0),
+                rounds,
+            );
+            collector.record_metrics(metrics.clone());
+            Some(metrics)
+        } else {
+            None
+        };
+
         Ok(GroupChatRun {
             final_output,
             events,
             transcript,
             rounds,
+            metrics,
         })
     }
 }
@@ -436,5 +493,12 @@ mod tests {
             .any(|event| matches!(event, GroupChatEvent::UserMessage { message } if message == "User clarifies")));
         assert_eq!(user_messages.lock().unwrap().len(), 1);
         assert!(run.transcript.iter().any(|msg| matches!(msg.role, crate::types::MessageRole::User) && msg.text() == Some("User clarifies")));
+    }
+}
+
+impl<M: GroupChatManager + 'static> WithMetrics for GroupChatOrchestrator<M> {
+    fn with_metrics_collector(mut self, collector: Arc<dyn MetricsCollector>) -> Self {
+        self.metrics_collector = Some(collector);
+        self
     }
 }

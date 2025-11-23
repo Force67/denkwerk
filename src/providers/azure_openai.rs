@@ -3,7 +3,7 @@ use std::{env, time::Duration};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::{multipart::Form, Client, RequestBuilder};
+use reqwest::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -12,46 +12,33 @@ use crate::{
     providers::LLMProvider,
     functions::{FunctionCall, Tool, ToolCall, ToolChoice},
     types::{
-        ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
-        ImageUploadResponse, MessageRole, ProviderCapabilities, ReasoningTrace, StreamEvent,
-        TokenUsage,
+        ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, MessageRole,
+        ProviderCapabilities, ReasoningTrace, StreamEvent, TokenUsage,
     },
 };
 
-const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_API_VERSION: &str = "2024-08-01-preview";
 
 #[derive(Debug, Clone)]
-pub struct OpenAIConfig {
+pub struct AzureOpenAIConfig {
     pub api_key: String,
-    pub base_url: String,
-    pub organization: Option<String>,
-    pub project: Option<String>,
+    pub endpoint: String,
+    pub api_version: String,
     pub request_timeout: Duration,
 }
 
-impl OpenAIConfig {
-    pub fn new(api_key: impl Into<String>) -> Self {
+impl AzureOpenAIConfig {
+    pub fn new(api_key: impl Into<String>, endpoint: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
-            base_url: DEFAULT_BASE_URL.to_string(),
-            organization: None,
-            project: None,
+            endpoint: endpoint.into(),
+            api_version: DEFAULT_API_VERSION.to_string(),
             request_timeout: Duration::from_secs(30),
         }
     }
 
-    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
-        self
-    }
-
-    pub fn with_organization(mut self, organization: impl Into<String>) -> Self {
-        self.organization = Some(organization.into());
-        self
-    }
-
-    pub fn with_project(mut self, project: impl Into<String>) -> Self {
-        self.project = Some(project.into());
+    pub fn with_api_version(mut self, version: impl Into<String>) -> Self {
+        self.api_version = version.into();
         self
     }
 
@@ -62,31 +49,27 @@ impl OpenAIConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct OpenAI {
+pub struct AzureOpenAI {
     client: Client,
-    config: OpenAIConfig,
+    config: AzureOpenAIConfig,
 }
 
-impl OpenAI {
-    pub fn new(api_key: impl Into<String>) -> Result<Self, LLMError> {
-        Self::from_config(OpenAIConfig::new(api_key))
+impl AzureOpenAI {
+    pub fn new(api_key: impl Into<String>, endpoint: impl Into<String>) -> Result<Self, LLMError> {
+        Self::from_config(AzureOpenAIConfig::new(api_key, endpoint))
     }
 
     pub fn from_env() -> Result<Self, LLMError> {
-        let api_key = env::var("OPENAI_API_KEY")
-            .map_err(|_| LLMError::MissingApiKey("OPENAI_API_KEY"))?;
-        let mut config = OpenAIConfig::new(api_key);
+        let api_key = env::var("AZURE_OPENAI_KEY")
+            .map_err(|_| LLMError::MissingApiKey("AZURE_OPENAI_KEY"))?;
+        let endpoint = env::var("AZURE_OPENAI_ENDPOINT")
+            .map_err(|_| LLMError::MissingApiKey("AZURE_OPENAI_ENDPOINT"))?;
 
-        if let Ok(base_url) = env::var("OPENAI_BASE_URL") {
-            config.base_url = base_url;
+        let mut config = AzureOpenAIConfig::new(api_key, endpoint);
+        if let Ok(version) = env::var("AZURE_OPENAI_API_VERSION") {
+            config.api_version = version;
         }
-        if let Ok(org) = env::var("OPENAI_ORGANIZATION") {
-            config.organization = Some(org);
-        }
-        if let Ok(project) = env::var("OPENAI_PROJECT") {
-            config.project = Some(project);
-        }
-        if let Ok(timeout_ms) = env::var("OPENAI_REQUEST_TIMEOUT_MS") {
+        if let Ok(timeout_ms) = env::var("AZURE_OPENAI_REQUEST_TIMEOUT_MS") {
             if let Ok(ms) = timeout_ms.parse::<u64>() {
                 config.request_timeout = Duration::from_millis(ms);
             }
@@ -95,7 +78,7 @@ impl OpenAI {
         Self::from_config(config)
     }
 
-    pub fn from_config(config: OpenAIConfig) -> Result<Self, LLMError> {
+    pub fn from_config(config: AzureOpenAIConfig) -> Result<Self, LLMError> {
         let client = Client::builder()
             .timeout(config.request_timeout)
             .build()?;
@@ -103,31 +86,22 @@ impl OpenAI {
         Ok(Self { client, config })
     }
 
-    fn endpoint(&self, path: &str) -> String {
+    fn endpoint(&self, deployment: &str) -> String {
         format!(
-            "{}/{}",
-            self.config.base_url.trim_end_matches('/'),
-            path.trim_start_matches('/')
+            "{}/openai/deployments/{}/chat/completions?api-version={}",
+            self.config.endpoint.trim_end_matches('/'),
+            deployment,
+            self.config.api_version
         )
     }
 
     fn with_default_headers(&self, builder: RequestBuilder) -> RequestBuilder {
-        let mut builder = builder.bearer_auth(&self.config.api_key);
-
-        if let Some(ref org) = self.config.organization {
-            builder = builder.header("OpenAI-Organization", org);
-        }
-
-        if let Some(ref project) = self.config.project {
-            builder = builder.header("OpenAI-Project", project);
-        }
-
-        builder
+        builder.header("api-key", &self.config.api_key)
     }
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAIRequestBody {
+struct AzureChatRequestBody {
     model: String,
     messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -147,44 +121,44 @@ struct OpenAIRequestBody {
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatCompletionResponse {
-    choices: Vec<ResponseChoice>,
+struct AzureChatResponse {
+    choices: Vec<AzureResponseChoice>,
     usage: Option<TokenUsage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponseChoice {
+struct AzureResponseChoice {
     message: ChatMessage,
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatCompletionChunk {
+struct AzureChatChunk {
     #[serde(default)]
-    choices: Vec<ChatCompletionChunkChoice>,
+    choices: Vec<AzureChatChunkChoice>,
     #[serde(default)]
     usage: Option<TokenUsage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatCompletionChunkChoice {
+struct AzureChatChunkChoice {
     #[serde(default)]
-    delta: Option<ChunkDelta>,
+    delta: Option<AzureChunkDelta>,
     #[serde(default)]
     finish_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct ChunkDelta {
+struct AzureChunkDelta {
     #[serde(default)]
-    content: Vec<ChunkContent>,
+    content: Vec<AzureChunkContent>,
     #[serde(default)]
-    reasoning: Vec<ChunkContent>,
+    reasoning: Vec<AzureChunkContent>,
     #[serde(default)]
-    tool_calls: Vec<ChunkToolCall>,
+    tool_calls: Vec<AzureChunkToolCall>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct ChunkContent {
+struct AzureChunkContent {
     #[serde(rename = "type")]
     #[serde(default)]
     _kind: Option<String>,
@@ -193,16 +167,16 @@ struct ChunkContent {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct ChunkToolCall {
+struct AzureChunkToolCall {
     index: usize,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
-    function: Option<ChunkToolCallFunction>,
+    function: Option<AzureChunkToolCallFunction>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct ChunkToolCallFunction {
+struct AzureChunkToolCallFunction {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -217,7 +191,7 @@ struct ToolCallAccumulator {
 }
 
 impl ToolCallAccumulator {
-    fn update(&mut self, delta: &ChunkToolCall) {
+    fn update(&mut self, delta: &AzureChunkToolCall) {
         if let Some(id) = &delta.id {
             if !id.is_empty() {
                 self.id = Some(id.clone());
@@ -261,26 +235,17 @@ impl ToolCallAccumulator {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAIErrorEnvelope {
-    error: OpenAIError,
+struct AzureErrorEnvelope {
+    error: AzureError,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAIError {
+struct AzureError {
     message: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct FileUploadResponse {
-    id: String,
-    #[serde(default)]
-    bytes: Option<usize>,
-    #[serde(default)]
-    created_at: Option<u64>,
-}
-
 #[async_trait]
-impl LLMProvider for OpenAI {
+impl LLMProvider for AzureOpenAI {
     async fn complete(
         &self,
         request: CompletionRequest,
@@ -296,8 +261,8 @@ impl LLMProvider for OpenAI {
             tool_choice,
         } = request;
 
-        let body = OpenAIRequestBody {
-            model,
+        let body = AzureChatRequestBody {
+            model: model.clone(),
             messages,
             max_tokens,
             temperature,
@@ -309,7 +274,7 @@ impl LLMProvider for OpenAI {
         };
 
         let builder = self
-            .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+            .with_default_headers(self.client.post(self.endpoint(&model)))
             .json(&body);
 
         let response = builder.send().await?;
@@ -317,14 +282,14 @@ impl LLMProvider for OpenAI {
 
         if !status.is_success() {
             let text = response.text().await?;
-            if let Ok(error) = serde_json::from_str::<OpenAIErrorEnvelope>(&text) {
+            if let Ok(error) = serde_json::from_str::<AzureErrorEnvelope>(&text) {
                 return Err(LLMError::Provider(error.error.message));
             }
 
             return Err(LLMError::Provider(format!("unexpected status {status}: {text}")));
         }
 
-        let parsed: ChatCompletionResponse = response.json().await?;
+        let parsed: AzureChatResponse = response.json().await?;
         let choice = parsed
             .choices
             .into_iter()
@@ -353,8 +318,8 @@ impl LLMProvider for OpenAI {
             tool_choice,
         } = request;
 
-        let body = OpenAIRequestBody {
-            model,
+        let body = AzureChatRequestBody {
+            model: model.clone(),
             messages,
             max_tokens,
             temperature,
@@ -366,7 +331,7 @@ impl LLMProvider for OpenAI {
         };
 
         let builder = self
-            .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+            .with_default_headers(self.client.post(self.endpoint(&model)))
             .header("Accept", "text/event-stream")
             .header("Cache-Control", "no-cache")
             .json(&body);
@@ -376,7 +341,7 @@ impl LLMProvider for OpenAI {
 
         if !status.is_success() {
             let text = response.text().await?;
-            if let Ok(error) = serde_json::from_str::<OpenAIErrorEnvelope>(&text) {
+            if let Ok(error) = serde_json::from_str::<AzureErrorEnvelope>(&text) {
                 return Err(LLMError::Provider(error.error.message));
             }
 
@@ -450,7 +415,7 @@ impl LLMProvider for OpenAI {
                         break;
                     }
 
-                    let chunk: ChatCompletionChunk = serde_json::from_str(payload)?;
+                    let chunk: AzureChatChunk = serde_json::from_str(payload)?;
 
                     if let Some(chunk_usage) = chunk.usage {
                         usage = Some(chunk_usage);
@@ -517,56 +482,12 @@ impl LLMProvider for OpenAI {
         Ok(Box::pin(stream))
     }
 
-    async fn upload_image(
-        &self,
-        request: ImageUploadRequest,
-    ) -> Result<ImageUploadResponse, LLMError> {
-        let ImageUploadRequest {
-            purpose,
-            filename,
-            bytes,
-            mime_type,
-        } = request;
-
-        let file_part = reqwest::multipart::Part::bytes(bytes)
-            .file_name(filename.clone())
-            .mime_str(&mime_type)?;
-
-        let form = Form::new()
-            .text("purpose", purpose)
-            .part("file", file_part);
-
-        let builder = self
-            .with_default_headers(self.client.post(self.endpoint("files")))
-            .multipart(form);
-
-        let response = builder.send().await?;
-        let status = response.status();
-
-        if !status.is_success() {
-            let text = response.text().await?;
-            if let Ok(error) = serde_json::from_str::<OpenAIErrorEnvelope>(&text) {
-                return Err(LLMError::Provider(error.error.message));
-            }
-
-            return Err(LLMError::Provider(format!("unexpected status {status}: {text}")));
-        }
-
-        let parsed: FileUploadResponse = response.json().await?;
-
-        Ok(ImageUploadResponse {
-            id: parsed.id,
-            bytes: parsed.bytes,
-            created_at: parsed.created_at,
-        })
-    }
-
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(true, true, true)
+        ProviderCapabilities::new(true, true, false)
     }
 
     fn name(&self) -> &'static str {
-        "openai"
+        "azure-openai"
     }
 }
 

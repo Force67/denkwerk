@@ -4,6 +4,7 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 
 use crate::{
     agents::{Agent, AgentError},
+    metrics::{AgentMetrics, ExecutionTimer, MetricsCollector, WithMetrics},
     types::ChatMessage,
     LLMProvider,
 };
@@ -28,6 +29,7 @@ pub struct ConcurrentRun {
     pub results: Vec<ConcurrentResult>,
     pub events: Vec<ConcurrentEvent>,
     pub transcript: Vec<ChatMessage>,
+    pub metrics: Option<Vec<AgentMetrics>>,
 }
 
 pub struct ConcurrentOrchestrator {
@@ -36,6 +38,7 @@ pub struct ConcurrentOrchestrator {
     agents: Vec<Agent>,
     event_callback: Option<Arc<dyn Fn(&ConcurrentEvent) + Send + Sync>>,
     shared_state: Option<Arc<dyn SharedStateContext>>,
+    metrics_collector: Option<Arc<dyn MetricsCollector>>,
 }
 
 impl ConcurrentOrchestrator {
@@ -46,6 +49,7 @@ impl ConcurrentOrchestrator {
             agents: Vec::new(),
             event_callback: None,
             shared_state: None,
+            metrics_collector: None,
         }
     }
 
@@ -75,6 +79,11 @@ impl ConcurrentOrchestrator {
         self.shared_state.as_ref()
     }
 
+    pub fn with_metrics_collector(mut self, collector: Arc<dyn MetricsCollector>) -> Self {
+        self.metrics_collector = Some(collector);
+        self
+    }
+
     fn emit_event(&self, event: &ConcurrentEvent) {
         if let Some(callback) = &self.event_callback {
             callback(event);
@@ -90,26 +99,78 @@ impl ConcurrentOrchestrator {
         let mut transcript = vec![ChatMessage::user(task.clone())];
         let mut events = Vec::new();
         let mut results = Vec::new();
+        let mut collected_metrics = self.metrics_collector.as_ref().map(|_| Vec::new());
 
         let mut futures = FuturesUnordered::new();
+        let metrics_collector = self.metrics_collector.clone();
         for agent in &self.agents {
             let agent = agent.clone();
             let provider = Arc::clone(&self.provider);
             let model = self.model.clone();
             let task_clone = task.clone();
+            let metrics_collector = metrics_collector.clone();
 
             futures.push(async move {
+                let mut metrics = metrics_collector
+                    .as_ref()
+                    .map(|_| AgentMetrics::new(agent.name().to_string()));
+                let timer = ExecutionTimer::new();
                 let history = vec![ChatMessage::user(task_clone)];
                 let turn = agent.execute(provider.as_ref(), &model, &history).await;
                 match turn {
-                    Ok(turn) => Ok((agent, turn.action)),
-                    Err(err) => Err(AgentError::from(err)),
+                    Ok(turn) => {
+                        if let (Some(ref mut m), Some(usage)) = (&mut metrics, turn.usage.as_ref()) {
+                            let input_cost = m.token_usage.cost_per_input_token;
+                            let output_cost = m.token_usage.cost_per_output_token;
+                            m.record_token_usage(usage, input_cost, output_cost);
+                        }
+
+                        if let Some(ref mut m) = metrics {
+                            for tool_call in &turn.tool_calls {
+                                m.record_function_call(
+                                    &tool_call.function.name,
+                                    timer.elapsed(),
+                                    true,
+                                );
+                            }
+                        }
+
+                        let action = turn.action;
+                        if let Some(ref mut m) = metrics {
+                            let output_length = match &action {
+                                AgentAction::Respond { message } => message.len(),
+                                AgentAction::HandOff { message, .. } => message.as_ref().map(|m| m.len()).unwrap_or(0),
+                                AgentAction::Complete { message } => message.as_ref().map(|m| m.len()).unwrap_or(0),
+                            };
+                            m.execution.total_duration = timer.elapsed();
+                            m.finalize(true, output_length, 1);
+                            if let Some(ref collector) = metrics_collector {
+                                collector.record_metrics(m.clone());
+                            }
+                        }
+
+                        Ok((agent, action, metrics))
+                    }
+                    Err(err) => {
+                        if let Some(ref mut m) = metrics {
+                            m.record_error(&err);
+                            m.execution.total_duration = timer.elapsed();
+                            m.finalize(false, 0, 1);
+                            if let Some(ref collector) = metrics_collector {
+                                collector.record_metrics(m.clone());
+                            }
+                        }
+                        Err(AgentError::from(err))
+                    }
                 }
             });
         }
 
         while let Some(result) = futures.next().await {
-            let (agent, action) = result?;
+            let (agent, action, metrics) = result?;
+            if let (Some(ref mut bucket), Some(metric)) = (&mut collected_metrics, metrics) {
+                bucket.push(metric);
+            }
             let name = agent.name().to_string();
 
             match action {
@@ -159,6 +220,7 @@ impl ConcurrentOrchestrator {
             results,
             events,
             transcript,
+            metrics: collected_metrics,
         })
     }
 }
@@ -167,6 +229,13 @@ fn push_agent_message(transcript: &mut Vec<ChatMessage>, agent: &Agent, content:
     let mut message = ChatMessage::assistant(content.to_string());
     message.name = Some(agent.name().to_string());
     transcript.push(message);
+}
+
+impl WithMetrics for ConcurrentOrchestrator {
+    fn with_metrics_collector(mut self, collector: Arc<dyn MetricsCollector>) -> Self {
+        self.metrics_collector = Some(collector);
+        self
+    }
 }
 
 #[cfg(test)]

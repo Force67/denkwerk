@@ -12,11 +12,12 @@ use tokio::time;
 use crate::{
     eval::scenario::DecisionSource,
     functions::{FunctionRegistry, ToolChoice, json_schema_for, to_value},
-    types::ChatMessage,
+    types::{ChatMessage, TokenUsage},
     Agent, AgentError, LLMError, LLMProvider,
 };
 
 use crate::shared_state::SharedStateContext;
+use crate::metrics::{AgentMetrics, ExecutionTimer, MetricsCollector, WithMetrics};
 
 /// What to do if a rule matches
 #[derive(Debug, Clone)]
@@ -67,6 +68,7 @@ impl HandoffRule {
 pub struct HandoffTurn {
     pub reply: Option<String>,
     pub events: Vec<HandoffEvent>,
+    pub metrics: Option<AgentMetrics>,
 }
 
 struct HandoffFunction;
@@ -312,6 +314,7 @@ fn extract_json_from_mixed_content(content: &str) -> Option<String> {
 pub(crate) struct AgentTurn {
     pub(crate) action: AgentAction,
     pub(crate) tool_calls: Vec<crate::functions::ToolCall>,
+    pub(crate) usage: Option<TokenUsage>,
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +335,7 @@ pub struct HandoffOrchestrator {
     llm_timeout_ms: u64,
     event_callback: Option<Arc<dyn Fn(&HandoffEvent) + Send + Sync>>,
     shared_state: Option<Arc<dyn SharedStateContext>>,
+    metrics_collector: Option<Arc<dyn MetricsCollector>>,
 }
 
 impl HandoffOrchestrator {
@@ -347,6 +351,7 @@ impl HandoffOrchestrator {
             llm_timeout_ms: 60_000,
             event_callback: None,
             shared_state: None,
+            metrics_collector: None,
         }
     }
 
@@ -494,6 +499,11 @@ Just respond naturally - the system handles the handoffs automatically based on 
         self.shared_state.as_ref()
     }
 
+    pub fn with_metrics_collector(mut self, collector: Arc<dyn MetricsCollector>) -> Self {
+        self.metrics_collector = Some(collector);
+        self
+    }
+
     fn emit_event(&self, event: &HandoffEvent) {
         if let Some(callback) = &self.event_callback {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (callback)(event)));
@@ -573,6 +583,7 @@ Just respond naturally - the system handles the handoffs automatically based on 
             transcript: Vec::new(),
             active_agent: agent_name,
             remaining_handoffs: self.max_handoffs,
+            metrics_collector: self.metrics_collector.clone(),
         })
     }
 }
@@ -582,6 +593,7 @@ pub struct HandoffSession<'a> {
     transcript: Vec<ChatMessage>,
     active_agent: String,
     remaining_handoffs: Option<usize>,
+    metrics_collector: Option<Arc<dyn MetricsCollector>>,
 }
 
 impl<'a> HandoffSession<'a> {
@@ -609,10 +621,20 @@ impl<'a> HandoffSession<'a> {
         self.transcript.push(ChatMessage::user(user_input.into()));
         let mut events = Vec::new();
         let mut rounds = 0usize;
+        let mut metrics = self
+            .metrics_collector
+            .as_ref()
+            .map(|_| AgentMetrics::new("handoff_flow".to_string()));
+        let execution_timer = ExecutionTimer::new();
 
         loop {
             rounds += 1;
             if rounds > self.orchestrator.max_rounds {
+                if let (Some(mut metrics), Some(collector)) = (metrics, &self.metrics_collector) {
+                    metrics.execution.total_duration = execution_timer.elapsed();
+                    metrics.finalize(false, 0, rounds);
+                    collector.record_metrics(metrics.clone());
+                }
                 return Err(AgentError::MaxRoundsReached);
             }
 
@@ -637,12 +659,48 @@ impl<'a> HandoffSession<'a> {
             )
             .await
             {
-                Ok(res) => res?,
-                Err(_) => return Err(AgentError::ProviderTimeout),
+                Ok(res) => res,
+                Err(_) => {
+                    if let (Some(mut metrics), Some(collector)) = (metrics, &self.metrics_collector) {
+                        metrics.record_error(&AgentError::ProviderTimeout);
+                        metrics.execution.total_duration = execution_timer.elapsed();
+                        metrics.finalize(false, 0, rounds);
+                        collector.record_metrics(metrics.clone());
+                    }
+                    return Err(AgentError::ProviderTimeout);
+                }
+            };
+            let turn = match turn {
+                Ok(turn) => turn,
+                Err(err) => {
+                    if let (Some(mut metrics), Some(collector)) = (metrics, &self.metrics_collector) {
+                        metrics.record_error(&err);
+                        metrics.execution.total_duration = execution_timer.elapsed();
+                        metrics.finalize(false, 0, rounds);
+                        collector.record_metrics(metrics.clone());
+                    }
+                    return Err(err.into());
+                }
             };
 
             let mut action = turn.action;
             let mut handoff_source = DecisionSource::Parser; // default
+
+            if let (Some(ref mut m), Some(usage)) = (&mut metrics, turn.usage.as_ref()) {
+                let input_cost = m.token_usage.cost_per_input_token;
+                let output_cost = m.token_usage.cost_per_output_token;
+                m.record_token_usage(usage, input_cost, output_cost);
+            }
+
+            if let Some(ref mut m) = metrics {
+                for tool_call in &turn.tool_calls {
+                    m.record_function_call(
+                        &tool_call.function.name,
+                        execution_timer.elapsed(),
+                        true,
+                    );
+                }
+            }
 
             // Check if handoff tool was called
             let handoff_tool_called = turn.tool_calls.iter().any(|tc| tc.function.name == "handoff");
@@ -675,9 +733,20 @@ impl<'a> HandoffSession<'a> {
                         events.push(event);
                     }
 
+                    let metrics = match (metrics.take(), &self.metrics_collector) {
+                        (Some(mut metrics), Some(collector)) => {
+                            metrics.execution.total_duration = execution_timer.elapsed();
+                            metrics.finalize(true, message.len(), rounds);
+                            collector.record_metrics(metrics.clone());
+                            Some(metrics)
+                        }
+                        (maybe_metrics, _) => maybe_metrics,
+                    };
+
                     return Ok(HandoffTurn {
                         reply: Some(message),
                         events,
+                        metrics,
                     });
                 }
                 AgentAction::HandOff { target, message } => {
@@ -734,13 +803,31 @@ impl<'a> HandoffSession<'a> {
                     self.orchestrator.emit_event(&event);
                     events.push(event);
 
+                    let metrics = match (metrics.take(), &self.metrics_collector) {
+                        (Some(mut metrics), Some(collector)) => {
+                            metrics.execution.total_duration = execution_timer.elapsed();
+                            metrics.finalize(true, message.as_ref().map(|m| m.len()).unwrap_or(0), rounds);
+                            collector.record_metrics(metrics.clone());
+                            Some(metrics)
+                        }
+                        (maybe_metrics, _) => maybe_metrics,
+                    };
+
                     return Ok(HandoffTurn {
                         reply: message,
                         events,
+                        metrics,
                     });
                 }
             }
         }
+    }
+}
+
+impl WithMetrics for HandoffOrchestrator {
+    fn with_metrics_collector(mut self, collector: Arc<dyn MetricsCollector>) -> Self {
+        self.metrics_collector = Some(collector);
+        self
     }
 }
 

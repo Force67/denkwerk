@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::{
     agents::{Agent, AgentError},
+    metrics::{AgentMetrics, ExecutionTimer, MetricsCollector, WithMetrics},
     types::{ChatMessage, CompletionRequest, MessageRole},
     LLMProvider,
 };
@@ -159,6 +160,7 @@ pub struct MagenticRun {
     pub events: Vec<MagenticEvent>,
     pub rounds: usize,
     pub transcript: Vec<ChatMessage>,
+    pub metrics: Option<AgentMetrics>,
 }
 
 pub struct MagenticOrchestrator {
@@ -170,6 +172,7 @@ pub struct MagenticOrchestrator {
     max_rounds: usize,
     event_callback: Option<Arc<dyn Fn(&MagenticEvent) + Send + Sync>>,
     shared_state: Option<Arc<dyn SharedStateContext>>,
+    metrics_collector: Option<Arc<dyn MetricsCollector>>,
 }
 
 impl MagenticOrchestrator {
@@ -187,6 +190,7 @@ impl MagenticOrchestrator {
             max_rounds: 12,
             event_callback: None,
             shared_state: None,
+            metrics_collector: None,
         }
     }
 
@@ -221,6 +225,11 @@ impl MagenticOrchestrator {
         self.shared_state.as_ref()
     }
 
+    pub fn with_metrics_collector(mut self, collector: Arc<dyn MetricsCollector>) -> Self {
+        self.metrics_collector = Some(collector);
+        self
+    }
+
     fn emit_event(&self, event: &MagenticEvent) {
         if let Some(callback) = &self.event_callback {
             callback(event);
@@ -231,6 +240,11 @@ impl MagenticOrchestrator {
         let task = task.into();
         let mut transcript = vec![ChatMessage::user(task.clone())];
         let mut events = Vec::new();
+        let mut metrics = self
+            .metrics_collector
+            .as_ref()
+            .map(|_| AgentMetrics::new("magentic_workflow".to_string()));
+        let execution_timer = ExecutionTimer::new();
 
         for round in 0..self.max_rounds {
             let manager_prompt = build_manager_prompt(
@@ -245,7 +259,23 @@ impl MagenticOrchestrator {
             // Execute the manager directly without Agent action parsing
             // to avoid issues with tool calls or malformed responses
             let request = CompletionRequest::new(self.model.clone(), manager_messages);
-            let response = self.provider.complete(request).await?;
+            let response = match self.provider.complete(request).await {
+                Ok(response) => response,
+                Err(err) => {
+                    if let (Some(ref mut m), Some(collector)) = (&mut metrics, &self.metrics_collector) {
+                        m.record_error(&err);
+                        m.execution.total_duration = execution_timer.elapsed();
+                        m.finalize(false, 0, round);
+                        collector.record_metrics(m.clone());
+                    }
+                    return Err(err.into());
+                }
+            };
+            if let (Some(ref mut m), Some(usage)) = (&mut metrics, response.usage.as_ref()) {
+                let input_cost = m.token_usage.cost_per_input_token;
+                let output_cost = m.token_usage.cost_per_output_token;
+                m.record_token_usage(usage, input_cost, output_cost);
+            }
             let manager_text = response.message.text().unwrap_or_default();
 
             if manager_text.trim().is_empty() {
@@ -286,7 +316,36 @@ impl MagenticOrchestrator {
 
                     let turn = agent
                         .execute(self.provider.as_ref(), &self.model, &transcript)
-                        .await?;
+                        .await;
+
+                    let turn = match turn {
+                        Ok(turn) => turn,
+                        Err(err) => {
+                            if let (Some(ref mut m), Some(collector)) = (&mut metrics, &self.metrics_collector) {
+                                m.record_error(&err);
+                                m.execution.total_duration = execution_timer.elapsed();
+                                m.finalize(false, 0, round + 1);
+                                collector.record_metrics(m.clone());
+                            }
+                            return Err(AgentError::Provider(err));
+                        }
+                    };
+
+                    if let (Some(ref mut m), Some(usage)) = (&mut metrics, turn.usage.as_ref()) {
+                        let input_cost = m.token_usage.cost_per_input_token;
+                        let output_cost = m.token_usage.cost_per_output_token;
+                        m.record_token_usage(usage, input_cost, output_cost);
+                    }
+
+                    if let Some(ref mut m) = metrics {
+                        for tool_call in &turn.tool_calls {
+                            m.record_function_call(
+                                &tool_call.function.name,
+                                execution_timer.elapsed(),
+                                true,
+                            );
+                        }
+                    }
 
                     match turn.action {
                         AgentAction::Respond { message } => {
@@ -334,14 +393,29 @@ impl MagenticOrchestrator {
                     };
                     self.emit_event(&event);
                     events.push(event);
+                    let metrics = if let (Some(mut metrics), Some(collector)) = (metrics, &self.metrics_collector) {
+                        metrics.execution.total_duration = execution_timer.elapsed();
+                        metrics.finalize(true, result.len(), round + 1);
+                        collector.record_metrics(metrics.clone());
+                        Some(metrics)
+                    } else {
+                        None
+                    };
                     return Ok(MagenticRun {
                         final_result: Some(result),
                         events,
                         rounds: round + 1,
                         transcript,
+                        metrics,
                     });
                 }
             }
+        }
+
+        if let (Some(mut metrics), Some(collector)) = (metrics, &self.metrics_collector) {
+            metrics.execution.total_duration = execution_timer.elapsed();
+            metrics.finalize(false, 0, self.max_rounds);
+            collector.record_metrics(metrics.clone());
         }
 
         Err(AgentError::MaxRoundsReached)
@@ -446,5 +520,12 @@ mod tests {
 ```"#;
         let extracted = extract_json_from_fenced_block(content).expect("json");
         assert!(extracted.contains("\"action\""));
+    }
+}
+
+impl WithMetrics for MagenticOrchestrator {
+    fn with_metrics_collector(mut self, collector: Arc<dyn MetricsCollector>) -> Self {
+        self.metrics_collector = Some(collector);
+        self
     }
 }

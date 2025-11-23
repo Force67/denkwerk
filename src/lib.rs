@@ -8,6 +8,7 @@
  pub mod history;
  pub mod eval;
  pub mod shared_state;
+ pub mod metrics;
 
 pub use error::LLMError;
 pub use providers::LLMProvider;
@@ -58,6 +59,10 @@ pub use shared_state::{
     SharedStateContextExt,
     SharedStateEntry,
     SharedStateExtensions,
+};
+pub use metrics::{
+    AgentMetrics, AggregatedMetrics, CostMetrics, ErrorMetrics, ExecutionMetrics, ExecutionTimer,
+    FunctionCallMetrics, InMemoryMetricsCollector, MetricsCollector, TokenUsageMetrics, WithMetrics,
 };
  pub use plugins::math;
  pub use schemars::JsonSchema;

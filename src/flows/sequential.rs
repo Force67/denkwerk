@@ -1,6 +1,4 @@
-use std::{
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use crate::{
     agents::{Agent, AgentError},
@@ -10,6 +8,7 @@ use crate::{
 
 use super::handoffflow::AgentAction;
 use crate::shared_state::SharedStateContext;
+use crate::metrics::{AgentMetrics, ExecutionTimer, MetricsCollector, WithMetrics};
 
 #[derive(Debug, Clone)]
 pub enum SequentialEvent {
@@ -28,6 +27,7 @@ pub struct SequentialRun {
     pub final_output: Option<String>,
     pub events: Vec<SequentialEvent>,
     pub transcript: Vec<ChatMessage>,
+    pub metrics: Option<AgentMetrics>,
 }
 
 pub struct SequentialOrchestrator {
@@ -36,6 +36,7 @@ pub struct SequentialOrchestrator {
     pipeline: Vec<Agent>,
     event_callback: Option<Arc<dyn Fn(&SequentialEvent) + Send + Sync>>,
     shared_state: Option<Arc<dyn SharedStateContext>>,
+    metrics_collector: Option<Arc<dyn MetricsCollector>>,
 }
 
 impl SequentialOrchestrator {
@@ -46,6 +47,7 @@ impl SequentialOrchestrator {
             pipeline: Vec::new(),
             event_callback: None,
             shared_state: None,
+            metrics_collector: None,
         }
     }
 
@@ -75,6 +77,15 @@ impl SequentialOrchestrator {
         self.shared_state.as_ref()
     }
 
+    pub fn with_metrics_collector(mut self, collector: Arc<dyn MetricsCollector>) -> Self {
+        self.metrics_collector = Some(collector);
+        self
+    }
+
+    pub fn metrics_collector(&self) -> Option<&Arc<dyn MetricsCollector>> {
+        self.metrics_collector.as_ref()
+    }
+
     fn emit_event(&self, event: &SequentialEvent) {
         if let Some(callback) = &self.event_callback {
             callback(event);
@@ -91,10 +102,49 @@ impl SequentialOrchestrator {
         let mut events = Vec::new();
         let mut payload = task;
 
+        // Initialize metrics collection
+        let execution_timer = ExecutionTimer::new();
+        let mut overall_metrics = if self.metrics_collector.is_some() {
+            Some(AgentMetrics::new("sequential_workflow".to_string()))
+        } else {
+            None
+        };
+
         for (index, agent) in self.pipeline.iter().enumerate() {
-            let turn = agent
+            let call_timer = ExecutionTimer::new();
+            let turn = match agent
                 .execute(self.provider.as_ref(), &self.model, &transcript)
-                .await?;
+                .await
+            {
+                Ok(turn) => turn,
+                Err(error) => {
+                    // Record error in metrics if available
+                    if let (Some(ref mut metrics), Some(collector)) = (&mut overall_metrics, &self.metrics_collector) {
+                        metrics.record_error(&error);
+                        metrics.execution.total_duration = execution_timer.elapsed();
+                        metrics.finalize(false, payload.len(), index + 1);
+                        collector.record_metrics(metrics.clone());
+                    }
+                    return Err(AgentError::Provider(error));
+                }
+            };
+
+            if let (Some(ref mut metrics), Some(usage)) = (&mut overall_metrics, turn.usage.as_ref()) {
+                let input_cost = metrics.token_usage.cost_per_input_token;
+                let output_cost = metrics.token_usage.cost_per_output_token;
+                metrics.record_token_usage(usage, input_cost, output_cost);
+            }
+
+            // Record function calls in metrics
+            if let Some(ref mut metrics) = overall_metrics {
+                for tool_call in &turn.tool_calls {
+                    metrics.record_function_call(
+                        &tool_call.function.name,
+                        call_timer.elapsed(),
+                        true, // Assume success for now
+                    );
+                }
+            }
 
             match turn.action {
                 AgentAction::Respond { message } => {
@@ -133,10 +183,21 @@ impl SequentialOrchestrator {
                     self.emit_event(&event);
                     events.push(event);
 
+                    // Finalize and collect metrics
+                    let final_metrics = if let (Some(mut metrics), Some(collector)) = (overall_metrics, &self.metrics_collector) {
+                        metrics.execution.total_duration = execution_timer.elapsed();
+                        metrics.finalize(true, payload.len(), index + 1);
+                        collector.record_metrics(metrics.clone());
+                        Some(metrics)
+                    } else {
+                        None
+                    };
+
                     return Ok(SequentialRun {
                         final_output: text.or_else(|| Some(payload.clone())),
                         events,
                         transcript,
+                        metrics: final_metrics,
                     });
                 }
             }
@@ -150,16 +211,34 @@ impl SequentialOrchestrator {
                 self.emit_event(&event);
                 events.push(event);
 
+                // Finalize and collect metrics
+                let final_metrics = if let (Some(mut metrics), Some(collector)) = (overall_metrics, &self.metrics_collector) {
+                    metrics.execution.total_duration = execution_timer.elapsed();
+                    metrics.finalize(true, payload.len(), self.pipeline.len());
+                    collector.record_metrics(metrics.clone());
+                    Some(metrics)
+                } else {
+                    None
+                };
+
                 return Ok(SequentialRun {
                     final_output: Some(payload),
                     events,
                     transcript,
+                    metrics: final_metrics,
                 });
             }
         }
 
         // Should not reach here because loop returns on last agent.
         unreachable!("sequential orchestrator exited without completion");
+    }
+}
+
+impl WithMetrics for SequentialOrchestrator {
+    fn with_metrics_collector(mut self, collector: Arc<dyn MetricsCollector>) -> Self {
+        self.metrics_collector = Some(collector);
+        self
     }
 }
 
