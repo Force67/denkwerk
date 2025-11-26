@@ -341,6 +341,13 @@ impl FunctionRegistry {
         }
     }
 
+    pub fn extend_from(&mut self, other: &FunctionRegistry) {
+        for (name, func) in &other.functions {
+            self.functions.insert(name.clone(), func.clone());
+        }
+        self.invalidate_cache();
+    }
+
     fn invalidate_cache(&mut self) {
         *self.cached_definitions.lock().unwrap() = None;
         *self.cached_tools.lock().unwrap() = None;

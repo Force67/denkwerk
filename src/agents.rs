@@ -122,6 +122,10 @@ impl Agent {
         self
     }
 
+    pub fn function_registry(&self) -> Option<Arc<FunctionRegistry>> {
+        self.functions.clone()
+    }
+
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
         self
@@ -241,7 +245,6 @@ impl Agent {
         Ok(AgentTurn { action, tool_calls, usage })
     }
 }
-
 
 
 
