@@ -786,6 +786,7 @@ dependencies = [
  "handlebars",
  "iced",
  "iced_futures",
+ "libloading 0.8.9",
  "meval",
  "once_cell",
  "regex",

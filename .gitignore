@@ -3,3 +3,7 @@
 /demos/flows/target
 /demos/function-calling/target
 /denkwerk-macros/target
+/frontend/node_modules
+/frontend/dist
+/frontend/.vite
+/frontend/bun.lockb

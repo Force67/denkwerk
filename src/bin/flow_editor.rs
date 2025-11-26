@@ -28,51 +28,190 @@ fn main() -> iced::Result {
 }
 
 fn prepare_display_env() -> bool {
-    let has_wayland = std::env::var("WAYLAND_DISPLAY").ok();
-    let has_x11 = std::env::var("DISPLAY").ok();
-    let backend_env = std::env::var("WINIT_UNIX_BACKEND").ok();
-
-    // Prefer X11 if present and backend not pinned.
-    if backend_env.is_none() {
-        if has_x11.is_some() {
-            std::env::set_var("WINIT_UNIX_BACKEND", "x11");
-        } else if has_wayland.is_some() {
-            std::env::set_var("WINIT_UNIX_BACKEND", "wayland");
-        }
+    #[derive(Copy, Clone, Debug)]
+    enum Backend {
+        Wayland,
+        X11,
     }
 
-    // If only Wayland is set, ensure the socket exists; otherwise exit early with guidance.
-    if has_wayland.is_some() && has_x11.is_none() {
-        if let Some(socket) = wayland_socket_path() {
-            if !socket.exists() {
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+    let x11_display = std::env::var("DISPLAY").ok();
+    let backend_hint = std::env::var("DENKWERK_BACKEND")
+        .ok()
+        .or_else(|| std::env::var("WINIT_UNIX_BACKEND").ok());
+
+    let mut order = Vec::new();
+    match backend_hint.as_deref() {
+        Some("wayland") => order.push(Backend::Wayland),
+        Some("x11") => order.push(Backend::X11),
+        _ => {
+            if wayland_display.is_some() && x11_display.is_some() {
+                order.push(Backend::X11);
+                order.push(Backend::Wayland);
                 eprintln!(
-                    "WAYLAND_DISPLAY is set ({:?}) but no compositor socket found at {:?}. \
-                     Start a Wayland compositor or run under X11/Xvfb, e.g. \
-                     `Xvfb :99 -screen 0 1280x720x24 & DISPLAY=:99 WINIT_UNIX_BACKEND=x11 cargo run --bin flow_editor`.",
-                    has_wayland.unwrap(),
-                    socket
+                    "Both WAYLAND_DISPLAY and DISPLAY are set; defaulting to X11. \
+                     Set DENKWERK_BACKEND=wayland to force the Wayland backend."
                 );
-                return false;
+            } else if wayland_display.is_some() {
+                order.push(Backend::Wayland);
+            } else if x11_display.is_some() {
+                order.push(Backend::X11);
             }
         }
     }
 
-    if has_x11.is_none() && has_wayland.is_none() {
+    if order.is_empty() {
         eprintln!(
             "No display found (neither DISPLAY nor WAYLAND_DISPLAY set). \
              Start an X11/Wayland session or run under Xvfb, e.g. \
-             `Xvfb :99 -screen 0 1280x720x24 & DISPLAY=:99 WINIT_UNIX_BACKEND=x11 cargo run --bin flow_editor`."
+             `Xvfb :99 -screen 0 1280x720x24 & DISPLAY=:99 cargo run --bin flow_editor`."
         );
         return false;
     }
 
-    true
+    let mut errors: Vec<String> = Vec::new();
+
+    for backend in order {
+        match backend {
+            Backend::Wayland => {
+                let display = match wayland_display.as_deref() {
+                    Some(value) => value,
+                    None => {
+                        errors.push("Wayland backend requested but WAYLAND_DISPLAY is not set.".to_string());
+                        continue;
+                    }
+                };
+
+                match check_wayland(display) {
+                    Ok(()) => return true,
+                    Err(err) => errors.push(err),
+                }
+            }
+            Backend::X11 => {
+                let display = match x11_display.as_deref() {
+                    Some(value) => value,
+                    None => {
+                        errors.push("X11 backend selected but DISPLAY is not set.".to_string());
+                        continue;
+                    }
+                };
+
+                match check_x11(display) {
+                    Ok(()) => {
+                        std::env::remove_var("WAYLAND_DISPLAY");
+                        return true;
+                    }
+                    Err(err) => errors.push(err),
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        eprintln!(
+            "No usable display backend detected. \
+             Start a Wayland compositor or X server, or run under Xvfb, e.g. \
+             `Xvfb :99 -screen 0 1280x720x24 & DISPLAY=:99 cargo run --bin flow_editor`."
+        );
+    } else {
+        for err in errors {
+            eprintln!("{err}");
+        }
+    }
+    false
 }
 
-fn wayland_socket_path() -> Option<std::path::PathBuf> {
-    let display = std::env::var("WAYLAND_DISPLAY").ok()?;
+fn check_wayland(display: &str) -> Result<(), String> {
+    let socket = wayland_socket_path(display);
+    if !socket.exists() {
+        return Err(format!(
+            "WAYLAND_DISPLAY is set ({display:?}) but no compositor socket found at {:?}. \
+             Start a Wayland compositor or run under Xvfb/X11 (set DENKWERK_BACKEND=x11).",
+            socket
+        ));
+    }
+
+    if !has_wayland_client_lib() {
+        return Err(
+            "Wayland libraries are missing (libwayland-client). Install them or set DENKWERK_BACKEND=x11."
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+fn check_x11(display: &str) -> Result<(), String> {
+    if let Some(socket) = x11_socket_path(display) {
+        if !socket.exists() {
+            return Err(format!(
+                "DISPLAY is set ({display}) but no X11 socket found at {:?}. \
+                 Start an X server or run under Xvfb, e.g. \
+                 `Xvfb :99 -screen 0 1280x720x24 & DISPLAY=:99 cargo run --bin flow_editor`.",
+                socket
+            ));
+        }
+    }
+
+    if !has_x11_client_lib() {
+        return Err(
+            "X11 libraries are missing (libX11). Install them or set DENKWERK_BACKEND=wayland if you prefer Wayland."
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+fn wayland_socket_path(display: &str) -> std::path::PathBuf {
     let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
-    Some(std::path::Path::new(&base).join(display))
+    std::path::Path::new(&base).join(display)
+}
+
+fn x11_socket_path(display: &str) -> Option<std::path::PathBuf> {
+    if !display.starts_with(':') {
+        return None;
+    }
+
+    let display_num = display
+        .trim_start_matches(':')
+        .split('.')
+        .next()
+        .and_then(|num| num.parse::<i32>().ok())?;
+
+    Some(std::path::Path::new("/tmp/.X11-unix").join(format!("X{display_num}")))
+}
+
+fn has_wayland_client_lib() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        for lib in ["libwayland-client.so.0", "libwayland-client.so"] {
+            if unsafe { libloading::Library::new(lib) }.is_ok() {
+                return true;
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
+fn has_x11_client_lib() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        for lib in ["libX11.so.6", "libX11.so"] {
+            if unsafe { libloading::Library::new(lib) }.is_ok() {
+                return true;
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
 #[derive(Debug)]

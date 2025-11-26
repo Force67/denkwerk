@@ -59,6 +59,9 @@
           cargo-flamegraph
           rust-analyzer-unwrapped
 
+          # Frontend tooling
+          bun
+
           # Build tools
           gcc
           gnumake
@@ -90,6 +93,8 @@
             echo "🦀 Denkwerk Development Environment"
             echo "=================================="
             echo "Rust version: $(rustc --version)"
+            echo ""
+            echo "🍞 Bun version: $(bun --version)"
             echo ""
             echo "🖥️  Using system display server (KDE/Wayland detected)"
             echo "   The application should use your existing Wayland session"

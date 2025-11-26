@@ -1,0 +1,238 @@
+:root {
+  font-family: "Space Grotesk", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: #e4e7f5;
+  background: #04060d;
+  line-height: 1.6;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #04060d;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.viewport {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(circle at 10% 20%, #0d1727 0, rgba(13, 23, 39, 0) 30%),
+    radial-gradient(circle at 80% 0%, #11213a 0, rgba(17, 33, 58, 0) 32%),
+    linear-gradient(160deg, #05070f 0%, #07101d 60%, #04060d 100%);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(10, 15, 26, 0.8);
+  backdrop-filter: blur(10px);
+  z-index: 2;
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.canvas-area {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  position: relative;
+  overflow: hidden;
+}
+
+.flow-wrapper {
+  background: #070a12;
+  height: 100%;
+}
+
+.react-flow__panel.react-flow__attribution {
+  display: none;
+}
+
+.side-panel {
+  background: rgba(8, 12, 21, 0.92);
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 14px;
+  overflow-y: auto;
+}
+
+.panel-section {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.panel-title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(88, 177, 255, 0.16);
+  color: #9bd0ff;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.badge.small {
+  padding: 4px 8px;
+}
+
+button {
+  border: none;
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, #2b8aff, #36d2ff);
+  color: #07101f;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  box-shadow: 0 8px 30px rgba(54, 210, 255, 0.25);
+}
+
+button.ghost {
+  background: rgba(255, 255, 255, 0.06);
+  color: #d8ddf4;
+  box-shadow: none;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.flow-select {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e6e9f8;
+  font-weight: 600;
+}
+
+.divider {
+  width: 1px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.panel-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  color: #e6e9f8;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.panel-input:focus {
+  outline: 2px solid #58b1ff;
+  border-color: transparent;
+}
+
+textarea.panel-input {
+  min-height: 80px;
+  resize: vertical;
+}
+
+.muted {
+  color: #9fa8c4;
+  font-size: 13px;
+}
+
+.react-flow__handle {
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  width: 12px;
+  height: 12px;
+}
+
+.edge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.edge-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.def-card {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.yaml-preview {
+  width: 100%;
+  min-height: 120px;
+  background: #0b1120;
+  color: #cdd5f5;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 10px;
+  font-family: "DM Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.context-menu {
+  position: fixed;
+  background: #0c101b;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 10;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.45);
+}
+
+@media (max-width: 1100px) {
+  .canvas-area {
+    grid-template-columns: 1fr;
+  }
+  .side-panel {
+    height: 320px;
+  }
+}
