@@ -1,0 +1,134 @@
+version: 0.1
+
+agents:
+  - id: researcher
+    model: ${AZURE_OPENAI_DEPLOYMENT}
+    system_prompt: prompts/researcher.md
+    defaults:
+      temperature: 0.2
+  - id: fact_finder
+    model: ${AZURE_OPENAI_DEPLOYMENT}
+    system_prompt: prompts/facts.md
+    defaults:
+      temperature: 0.1
+  - id: calculator
+    model: ${AZURE_OPENAI_DEPLOYMENT}
+    system_prompt: prompts/calculator.md
+    tools: [math_tool]
+    defaults:
+      temperature: 0.1
+  - id: yaml_writer
+    model: ${AZURE_OPENAI_DEPLOYMENT}
+    system_prompt: prompts/responder.md
+    defaults:
+      temperature: 0.4
+  - id: editor
+    model: ${AZURE_OPENAI_DEPLOYMENT}
+    system_prompt: prompts/editor.md
+    defaults:
+      temperature: 0.2
+
+tools:
+  - id: math_tool
+    kind: function
+    function: math_add
+
+flows:
+  - id: main
+    entry: start
+    nodes:
+      - id: start
+        type: input
+      - id: research
+        type: agent
+        agent: researcher
+      - id: fork_analysis
+        type: parallel
+        converge: true
+      - id: fact_agent
+        type: agent
+        agent: fact_finder
+      - id: calc_agent
+        type: agent
+        agent: calculator
+      - id: gather_facts
+        type: subflow
+        flow: facts
+      - id: merge_analysis
+        type: merge
+      - id: route
+        type: decision
+      - id: direct
+        type: agent
+        agent: yaml_writer
+        parameters:
+          temperature: 0.6
+      - id: merge_paths
+        type: merge
+      - id: compose
+        type: agent
+        agent: yaml_writer
+      - id: loop_refine
+        type: loop
+        max_iterations: 2
+        condition: "iteration < 1"
+      - id: polish
+        type: agent
+        agent: editor
+      - id: end
+        type: output
+    edges:
+      - from: start
+        to: research
+      - from: research
+        to: fork_analysis
+      - from: fork_analysis
+        to: fact_agent
+      - from: fork_analysis
+        to: calc_agent
+      - from: fork_analysis
+        to: gather_facts
+      - from: fact_agent
+        to: merge_analysis
+      - from: calc_agent
+        to: merge_analysis
+      - from: gather_facts
+        to: merge_analysis
+      - from: merge_analysis
+        to: route
+      - from: route
+        to: direct
+        condition: "mode == 'short'"
+      - from: direct
+        to: merge_paths
+      - from: route
+        to: compose
+        condition: else
+      - from: merge_paths
+        to: compose
+      - from: compose
+        to: loop_refine
+      - from: loop_refine
+        to: polish
+        condition: "iteration < 1"
+      - from: loop_refine
+        to: polish
+        condition: else
+      - from: polish
+        to: end
+
+  - id: facts
+    entry: facts_start
+    nodes:
+      - id: facts_start
+        type: input
+      - id: facts_agent
+        type: agent
+        agent: fact_finder
+      - id: facts_end
+        type: output
+    edges:
+      - from: facts_start
+        to: facts_agent
+      - from: facts_agent
+        to: facts_end

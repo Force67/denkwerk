@@ -7,3 +7,4 @@
 /frontend/dist
 /frontend/.vite
 /frontend/bun.lockb
+examples/prompt_from_yaml_demo/.env

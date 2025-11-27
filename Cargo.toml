@@ -37,3 +37,4 @@ path = "src/bin/handoff-eval.rs"
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 colored = "2.0"
+dotenvy = "0.15"
