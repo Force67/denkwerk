@@ -211,11 +211,55 @@ pub struct ImageUploadResponse {
     pub created_at: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingRequest {
+    pub model: String,
+    pub input: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+impl EmbeddingRequest {
+    pub fn new(model: impl Into<String>, input: Vec<String>) -> Self {
+        Self {
+            model: model.into(),
+            input,
+            user: None,
+        }
+    }
+
+    pub fn with_user(mut self, user: impl Into<String>) -> Self {
+        self.user = Some(user.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingResponse {
+    pub data: Vec<Embedding>,
+    pub model: String,
+    pub usage: Option<EmbeddingUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Embedding {
+    pub object: String,
+    pub embedding: Vec<f32>,
+    pub index: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingUsage {
+    pub prompt_tokens: u32,
+    pub total_tokens: u32,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProviderCapabilities {
     pub supports_streaming: bool,
     pub supports_reasoning_stream: bool,
     pub supports_image_uploads: bool,
+    pub supports_embeddings: bool,
 }
 
 impl ProviderCapabilities {
@@ -223,11 +267,13 @@ impl ProviderCapabilities {
         supports_streaming: bool,
         supports_reasoning_stream: bool,
         supports_image_uploads: bool,
+        supports_embeddings: bool,
     ) -> Self {
         Self {
             supports_streaming,
             supports_reasoning_stream,
             supports_image_uploads,
+            supports_embeddings,
         }
     }
 }

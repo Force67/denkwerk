@@ -14,7 +14,7 @@ use crate::{
     types::{
         ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
         ImageUploadResponse, MessageRole, ProviderCapabilities, ReasoningTrace, StreamEvent,
-        TokenUsage,
+        TokenUsage, EmbeddingRequest, EmbeddingResponse,
     },
 };
 
@@ -277,6 +277,28 @@ struct FileUploadResponse {
     bytes: Option<usize>,
     #[serde(default)]
     created_at: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIEmbeddingRequestBody {
+    model: String,
+    input: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIEmbeddingResponse {
+    data: Vec<OpenAIEmbedding>,
+    model: String,
+    usage: Option<crate::types::EmbeddingUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIEmbedding {
+    object: String,
+    embedding: Vec<f32>,
+    index: usize,
 }
 
 #[async_trait]
@@ -561,8 +583,47 @@ impl LLMProvider for OpenAI {
         })
     }
 
+    async fn create_embeddings(
+        &self,
+        request: EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, LLMError> {
+        let body = OpenAIEmbeddingRequestBody {
+            model: request.model,
+            input: request.input,
+            user: request.user,
+        };
+
+        let builder = self
+            .with_default_headers(self.client.post(self.endpoint("embeddings")))
+            .json(&body);
+
+        let response = builder.send().await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let text = response.text().await?;
+            if let Ok(error) = serde_json::from_str::<OpenAIErrorEnvelope>(&text) {
+                return Err(LLMError::Provider(error.error.message));
+            }
+
+            return Err(LLMError::Provider(format!("unexpected status {status}: {text}")));
+        }
+
+        let parsed: OpenAIEmbeddingResponse = response.json().await?;
+
+        Ok(EmbeddingResponse {
+            data: parsed.data.into_iter().map(|embedding| crate::types::Embedding {
+                object: embedding.object,
+                embedding: embedding.embedding,
+                index: embedding.index,
+            }).collect(),
+            model: parsed.model,
+            usage: parsed.usage,
+        })
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(true, true, true)
+        ProviderCapabilities::new(true, true, true, true)
     }
 
     fn name(&self) -> &'static str {

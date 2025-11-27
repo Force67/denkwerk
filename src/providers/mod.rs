@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::types::{
     CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
-    ImageUploadResponse, ProviderCapabilities,
+    ImageUploadResponse, ProviderCapabilities, EmbeddingRequest, EmbeddingResponse,
 };
 use crate::LLMError;
 
@@ -27,6 +27,13 @@ pub trait LLMProvider: Send + Sync {
         _request: ImageUploadRequest,
     ) -> Result<ImageUploadResponse, LLMError> {
         Err(LLMError::Unsupported("image uploads"))
+    }
+
+    async fn create_embeddings(
+        &self,
+        _request: EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, LLMError> {
+        Err(LLMError::Unsupported("embeddings"))
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

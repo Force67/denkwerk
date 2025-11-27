@@ -13,7 +13,7 @@ use crate::{
     functions::{FunctionCall, Tool, ToolCall, ToolChoice},
     types::{
         ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, MessageRole,
-        ProviderCapabilities, ReasoningTrace, StreamEvent, TokenUsage,
+        ProviderCapabilities, ReasoningTrace, StreamEvent, TokenUsage, EmbeddingRequest, EmbeddingResponse,
     },
 };
 
@@ -89,6 +89,15 @@ impl AzureOpenAI {
     fn endpoint(&self, deployment: &str) -> String {
         format!(
             "{}/openai/deployments/{}/chat/completions?api-version={}",
+            self.config.endpoint.trim_end_matches('/'),
+            deployment,
+            self.config.api_version
+        )
+    }
+
+    fn embeddings_endpoint(&self, deployment: &str) -> String {
+        format!(
+            "{}/openai/deployments/{}/embeddings?api-version={}",
             self.config.endpoint.trim_end_matches('/'),
             deployment,
             self.config.api_version
@@ -242,6 +251,28 @@ struct AzureErrorEnvelope {
 #[derive(Debug, Deserialize)]
 struct AzureError {
     message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AzureEmbeddingRequestBody {
+    model: String,
+    input: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AzureEmbeddingResponse {
+    data: Vec<AzureEmbedding>,
+    model: String,
+    usage: Option<crate::types::EmbeddingUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AzureEmbedding {
+    object: String,
+    embedding: Vec<f32>,
+    index: usize,
 }
 
 #[async_trait]
@@ -482,8 +513,47 @@ impl LLMProvider for AzureOpenAI {
         Ok(Box::pin(stream))
     }
 
+    async fn create_embeddings(
+        &self,
+        request: EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, LLMError> {
+        let body = AzureEmbeddingRequestBody {
+            model: request.model.clone(),
+            input: request.input,
+            user: request.user,
+        };
+
+        let builder = self
+            .with_default_headers(self.client.post(self.embeddings_endpoint(&request.model)))
+            .json(&body);
+
+        let response = builder.send().await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let text = response.text().await?;
+            if let Ok(error) = serde_json::from_str::<AzureErrorEnvelope>(&text) {
+                return Err(LLMError::Provider(error.error.message));
+            }
+
+            return Err(LLMError::Provider(format!("unexpected status {status}: {text}")));
+        }
+
+        let parsed: AzureEmbeddingResponse = response.json().await?;
+
+        Ok(EmbeddingResponse {
+            data: parsed.data.into_iter().map(|embedding| crate::types::Embedding {
+                object: embedding.object,
+                embedding: embedding.embedding,
+                index: embedding.index,
+            }).collect(),
+            model: parsed.model,
+            usage: parsed.usage,
+        })
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(true, true, false)
+        ProviderCapabilities::new(true, true, false, true)
     }
 
     fn name(&self) -> &'static str {
