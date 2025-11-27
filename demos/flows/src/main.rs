@@ -310,7 +310,7 @@ async fn demo_magentic(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn st
                 }
             }
             denkwerk::MagenticEvent::Completed { message } => {
-                println!("{}: {}", "🎉 Final Result".bright_green().bold(), message);
+                println!("{}: {}", "Final Result".bright_green().bold(), message);
             }
         }
     }

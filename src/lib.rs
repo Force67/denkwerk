@@ -56,6 +56,7 @@ pub use flows::spec::{
     ToolDefinition as FlowToolDefinition,
     PlannedStep,
     ExecutionStep,
+    ToolRunResult,
 };
 pub use flows::magentic::{
     MagenticDecision,
@@ -81,6 +82,12 @@ pub use flows::group_chat::{
     GroupChatOrchestrator,
     GroupChatRun,
     RoundRobinGroupChatManager,
+};
+pub use flows::flow_builder::{
+    Flow,
+    FlowResult,
+    FlowRunner,
+    FlowError,
 };
 pub use shared_state::{
     InMemorySharedStateStore,

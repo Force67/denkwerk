@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run the workflow
     let result = orchestrator.run("Research and analyze climate change impacts").await?;
 
-    println!("✅ Research workflow completed!");
+    println!("Research workflow completed!");
     println!("📋 Final output: {:?}", result.final_output);
 
     // Demonstrate the shared state contents
@@ -221,19 +221,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Show structured data retrieval
     if let Some(report) = shared_state.extensions().get_object::<CompiledReport>("report_climate_change", Some("reports")).await? {
-        println!("\n📊 Compiled Report:");
+        println!("\nCompiled Report:");
         println!("  Summary: {}", report.summary);
         println!("  Recommendations: {:?}", report.recommendations);
         println!("  Data Sources: {:?}", report.data_sources);
     }
 
-    println!("\n🎉 Shared States Agent Functions Demo Complete!");
+    println!("\nShared States Agent Functions Demo Complete!");
     println!("📈 Key Features Demonstrated:");
-    println!("  ✅ Agent functions can access and modify shared state");
-    println!("  ✅ Persistent state across multiple workflow steps");
-    println!("  ✅ Scoped storage for organized data management");
-    println!("  ✅ Both structured and unstructured data support");
-    println!("  ✅ Real-time state inspection during workflow execution");
+    println!("  Agent functions can access and modify shared state");
+    println!("  Persistent state across multiple workflow steps");
+    println!("  Scoped storage for organized data management");
+    println!("  Both structured and unstructured data support");
+    println!("  Real-time state inspection during workflow execution");
 
     Ok(())
 }

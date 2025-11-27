@@ -54,7 +54,7 @@ struct DraftContent {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Shared States Demo\n");
+    println!("Shared States Demo\n");
 
     // Create a shared state store
     let shared_state = Arc::new(InMemorySharedStateStore::new());
@@ -94,16 +94,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("demo".to_string())
     ).await?;
 
-    println!("📝 Running document processing workflow with shared states...\n");
+    println!("Running document processing workflow with shared states...\n");
 
     // Run the workflow
     let result = orchestrator.run("Process this market trends document").await?;
 
-    println!("✅ Workflow completed successfully!");
-    println!("📄 Final output: {:?}", result.final_output);
+    println!("Workflow completed successfully!");
+    println!("Final output: {:?}", result.final_output);
 
     // Demonstrate shared state usage
-    println!("\n🔍 Checking shared state contents:");
+    println!("\nChecking shared state contents:");
 
     // List all states in the "demo" scope
     let demo_states = shared_state.list_state_ids(Some("demo")).await?;
@@ -149,8 +149,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let processing_states = shared_state.list_state_ids(Some("processing")).await?;
     println!("States in 'processing' scope: {:?}", processing_states);
 
-    println!("\n🎉 Shared States Demo Complete!");
-    println!("📊 Summary:");
+    println!("\nShared States Demo Complete!");
+    println!("Summary:");
     println!("  - Created shared state store with scoped storage");
     println!("  - Ran workflow with shared state context");
     println!("  - Stored and retrieved both string and structured data");

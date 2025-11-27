@@ -90,8 +90,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ).await?;
 
     let sequential_result = sequential_orchestrator.run("Analyze system performance").await?;
-    println!("✅ Sequential workflow completed");
-    println!("📊 Final output: {:?}", sequential_result.final_output);
+    println!("Sequential workflow completed");
+    println!("Final output: {:?}", sequential_result.final_output);
 
     // Store results from sequential workflow
     let task_result = TaskResult {
@@ -133,8 +133,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ).await?;
 
     let concurrent_result = concurrent_orchestrator.run("Perform comprehensive system analysis").await?;
-    println!("✅ Concurrent workflow completed");
-    println!("📊 Concurrent results count: {}", concurrent_result.results.len());
+    println!("Concurrent workflow completed");
+    println!("Concurrent results count: {}", concurrent_result.results.len());
 
     // Store concurrent results
     let concurrent_summary = format!("Concurrent analysis completed with {} parallel tasks", concurrent_result.results.len());
@@ -176,7 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ).await?;
 
     let group_chat_result = group_chat_orchestrator.run("Discuss overall system health").await?;
-    println!("✅ Group chat completed");
+    println!("Group chat completed");
     println!("💬 Discussion rounds: {}", group_chat_result.rounds);
 
     // Store group chat results
@@ -186,21 +186,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("scenario3".to_string())
     ).await?;
 
-    println!("\n🔍 Analyzing Cross-Orchestrator Shared State\n");
+    println!("\nAnalyzing Cross-Orchestrator Shared State\n");
 
     // Show that all orchestrators have been sharing the same state store
-    println!("📊 Shared State Analysis:");
+    println!("Shared State Analysis:");
 
     for scope in ["scenario1", "scenario2", "scenario3", "global"] {
         let states = shared_state.list_state_ids(Some(scope)).await?;
         if !states.is_empty() {
-            println!("📁 Scope '{}': {} entries", scope, states.len());
+            println!("Scope '{}': {} entries", scope, states.len());
 
             for state_id in states {
                 if let Ok(Some(value)) = shared_state.read_state(&state_id, Some(scope)).await {
                     match scope {
                         "scenario1" | "scenario2" | "scenario3" => {
-                            println!("  📄 {}: {:?}", state_id, value);
+                            println!("  {}: {:?}", state_id, value);
                         }
                         "global" => {
                             println!("  🌐 {}: {:?}", state_id, value);
@@ -219,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "sequential_result",
         Some("scenario1")
     ).await? {
-        println!("✅ Retrieved sequential workflow result from group chat context:");
+        println!("Retrieved sequential workflow result from group chat context:");
         println!("   Agent: {}", sequential_result.agent);
         println!("   Result: {}", sequential_result.result);
         println!("   Timestamp: {}", sequential_result.timestamp);
@@ -233,15 +233,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("global".to_string())
     ).await?;
 
-    println!("\n🎉 Multi-Orchestrator Shared States Demo Complete!");
+    println!("\nMulti-Orchestrator Shared States Demo Complete!");
     println!("📈 Key Features Demonstrated:");
-    println!("  ✅ Same shared state store used across different orchestrator types");
-    println!("  ✅ Sequential workflow: Data persisted for subsequent access");
-    println!("  ✅ Concurrent workflow: Parallel access to shared state");
-    println!("  ✅ Group chat: Collaborative state management");
-    println!("  ✅ Cross-workflow data sharing and access patterns");
-    println!("  ✅ Scoped organization for different workflow scenarios");
-    println!("  ✅ Persistent state across multiple workflow executions");
+    println!("  Same shared state store used across different orchestrator types");
+    println!("  Sequential workflow: Data persisted for subsequent access");
+    println!("  Concurrent workflow: Parallel access to shared state");
+    println!("  Group chat: Collaborative state management");
+    println!("  Cross-workflow data sharing and access patterns");
+    println!("  Scoped organization for different workflow scenarios");
+    println!("  Persistent state across multiple workflow executions");
 
     Ok(())
 }

@@ -66,7 +66,7 @@ impl LLMProvider for RealisticMockProvider {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("📊 Agent Metrics and Token Spending Demo\n");
+    println!("Agent Metrics and Token Spending Demo\n");
 
     // Create metrics collector
     let metrics_collector = Arc::new(InMemoryMetricsCollector::new());
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Review implementations for quality, security, and performance optimizations."
     );
 
-    println!("🚀 Running Multiple Workflows with Metrics Collection\n");
+    println!("Running Multiple Workflows with Metrics Collection\n");
 
     // Run first workflow
     println!("📋 Workflow 1: Software Development Process");
@@ -103,10 +103,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_shared_state(shared_state.clone());
 
     let result1 = orchestrator1.run("Develop a user authentication system").await?;
-    println!("✅ Workflow 1 completed");
+    println!("Workflow 1 completed");
 
     if let Some(ref metrics) = result1.metrics {
-        println!("📊 Execution Metrics:");
+        println!("Execution Metrics:");
         println!("   Duration: {:?}", metrics.execution.total_duration);
         println!("   Rounds: {}", metrics.execution.rounds);
         println!("   Output length: {} chars", metrics.execution.output_length);
@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   Estimated cost: ${:.6}", metrics.cost.estimated_cost_usd);
         println!("   Cost per round: ${:.6}", metrics.cost.cost_per_round);
 
-        println!("🔧 Function Calls:");
+        println!("Function Calls:");
         println!("   Total calls: {}", metrics.function_calls.total_calls);
         println!("   Success rate: {:.2}%", metrics.success_rate() * 100.0);
     }
@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_shared_state(shared_state.clone());
 
     let result2 = orchestrator2.run("Build a REST API for user management").await?;
-    println!("✅ Workflow 2 completed");
+    println!("Workflow 2 completed");
 
     // Store second workflow result
     shared_state.extensions().set_string(
@@ -163,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_shared_state(shared_state.clone());
 
     let result3 = orchestrator3.run("Perform quality assurance on existing code").await?;
-    println!("✅ Workflow 3 completed");
+    println!("Workflow 3 completed");
 
     // Store third workflow result
     shared_state.extensions().set_string(
@@ -194,7 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   From: {}", aggregated.time_range.0.format("%Y-%m-%d %H:%M:%S UTC"));
     println!("   To: {}", aggregated.time_range.1.format("%Y-%m-%d %H:%M:%S UTC"));
 
-    println!("\n📊 Metrics by Agent:");
+    println!("\nMetrics by Agent:");
     for (agent_name, agent_metrics) in &aggregated.by_agent {
         println!("\n🤖 Agent: {}", agent_name);
         println!("   Executions: {}", agent_metrics.len());
@@ -215,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n🔍 Performance Insights:");
+    println!("\nPerformance Insights:");
     println!("================================");
 
     // Calculate and display insights
@@ -232,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         0.0
     };
 
-    println!("📊 Performance Summary:");
+    println!("Performance Summary:");
     println!("   Average tokens per execution: {}", avg_tokens_per_execution);
     println!("   Average cost per execution: ${:.6}", avg_cost_per_execution);
     println!("   Cost efficiency: {:.2} tokens per $0.001", avg_tokens_per_execution as f64 / (total_cost * 1000.0));
@@ -247,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let monthly_cost_heavy = daily_executions_heavy as f64 * 30.0 * avg_cost_per_execution;
     println!("   {} executions/day: ${:.2}/month", daily_executions_heavy, monthly_cost_heavy);
 
-    println!("\n🎯 Recommendations:");
+    println!("\nRecommendations:");
     println!("================================");
 
     if aggregated.average_success_rate < 0.95 {
@@ -260,21 +260,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if avg_tokens_per_execution > 1000 {
-        println!("📝 High token usage per execution - consider prompt optimization");
+        println!("High token usage per execution - consider prompt optimization");
     }
 
-    println!("✅ Metrics collection is working properly!");
+    println!("Metrics collection is working properly!");
     println!("📈 Consider setting up regular monitoring and alerts for production usage");
 
-    println!("\n🎉 Agent Metrics Demo Complete!");
-    println!("📚 Key Features Demonstrated:");
-    println!("  ✅ Token usage tracking across multiple executions");
-    println!("  ✅ Cost estimation and budget projections");
-    println!("  ✅ Performance metrics and success rates");
-    println!("  ✅ Error tracking and analysis");
-    println!("  ✅ Aggregated statistics across workflows");
-    println!("  ✅ Integration with shared state system");
-    println!("  ✅ Performance insights and recommendations");
+    println!("\nAgent Metrics Demo Complete!");
+    println!("Key Features Demonstrated:");
+    println!("  Token usage tracking across multiple executions");
+    println!("  Cost estimation and budget projections");
+    println!("  Performance metrics and success rates");
+    println!("  Error tracking and analysis");
+    println!("  Aggregated statistics across workflows");
+    println!("  Integration with shared state system");
+    println!("  Performance insights and recommendations");
 
     Ok(())
 }
