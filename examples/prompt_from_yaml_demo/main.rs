@@ -6,9 +6,9 @@ use denkwerk::{
     FlowContext,
     FlowNodeKind,
     LLMProvider,
-    SequentialOrchestrator,
     SequentialEvent,
 };
+use denkwerk::flows::spec::FlowRunError;
 use denkwerk::providers::azure_openai::AzureOpenAI;
 use denkwerk::kernel_function;
 use denkwerk::functions::KernelFunction;
@@ -93,54 +93,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Decision context: mode={mode}");
     }
     println!("Planned steps:");
+    let mut task_with_tools = task.clone();
     for (idx, step) in plan.iter().enumerate() {
         match step {
             ExecutionStep::Agent(agent) => println!("  {idx}: agent -> {}", agent.name()),
+            ExecutionStep::Tool { tool, arguments } => {
+                if let Some(args) = arguments {
+                    println!("  {idx}: tool -> {tool} (args from YAML)");
+                    println!("        args: {args}");
+                } else {
+                    println!("  {idx}: tool -> {tool}");
+                }
+            }
             ExecutionStep::Parallel { branches, .. } => {
                 println!("  {idx}: parallel -> {} branches", branches.len());
             }
         }
     }
 
-    let mut pipeline = Vec::new();
-    for step in &plan {
-        match step {
-            ExecutionStep::Agent(agent) => pipeline.push(agent.clone()),
-            ExecutionStep::Parallel { branches, .. } => {
-                println!("Note: parallel branches will run sequentially in this demo.");
-                for branch in branches {
-                    for agent in branch {
-                        pipeline.push(agent.clone());
-                    }
-                }
+    let provider: Arc<dyn LLMProvider> = Arc::new(AzureOpenAI::from_env()?);
+    let event_logger = |event: &SequentialEvent| match event {
+        SequentialEvent::Step { agent, output } => {
+            println!("\n[{agent}] produced:\n{output}\n");
+        }
+        SequentialEvent::Completed { agent, output } => {
+            if let Some(text) = output {
+                println!("[{agent}] completed with:\n{text}\n");
             }
+        }
+    };
+
+    let (mut run, tool_runs) = match builder
+        .run_sequential_flow(
+            "main",
+            &ctx,
+            &tool_registries,
+            provider,
+            task_with_tools,
+            Some(event_logger),
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(FlowRunError::Tool(err)) => {
+            eprintln!("Tool execution failed: {err}");
+            std::process::exit(1);
+        }
+        Err(FlowRunError::NoAgents(flow)) => {
+            eprintln!("Flow '{flow}' contains no agent steps.");
+            std::process::exit(1);
+        }
+        Err(other) => return Err(Box::new(other)),
+    };
+
+    if let Some(uuid) = tool_runs.iter().find_map(|run| {
+        run.value
+            .get("body")
+            .and_then(|b| b.get("uuid"))
+            .and_then(|u| u.as_str())
+    }) {
+        if let Some(text) = run.final_output.as_mut() {
+            text.push_str(&format!("\n\nUUID (from http_uuid): {uuid}"));
         }
     }
 
-    let model = builder
-        .document()
-        .agents
-        .iter()
-        .find(|a| pipeline.first().map(|p| p.name()) == Some(a.id.as_str()))
-        .map(|a| a.model.clone())
-        .unwrap_or_else(|| deployment.clone());
-
-    let provider: Arc<dyn LLMProvider> = Arc::new(AzureOpenAI::from_env()?);
-    let orchestrator = SequentialOrchestrator::new(provider, model)
-        .with_agents(pipeline)
-        .with_event_callback(|event| match event {
-            SequentialEvent::Step { agent, output } => {
-                println!("\n[{agent}] produced:\n{output}\n");
-            }
-            SequentialEvent::Completed { agent, output } => {
-                if let Some(text) = output {
-                    println!("[{agent}] completed with:\n{text}\n");
-                }
-            }
-        });
-
-    let run = orchestrator.run(task).await?;
-    println!("--- Final output ---\n{}", run.final_output.unwrap_or_default());
+    println!("--- Final output ---\n{}", run.final_output.clone().unwrap_or_default());
 
     Ok(())
 }

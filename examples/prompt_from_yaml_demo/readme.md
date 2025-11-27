@@ -22,3 +22,20 @@ FLOW_MODE=short cargo run --example prompt_from_yaml_demo -- "Summarize why Rust
 ```
 
 The example automatically loads `.env` from this folder before creating the provider and orchestration pipeline.
+
+### YAML-only tool inputs (new)
+Tool nodes can now carry default arguments directly in `flow.yaml`:
+
+```yaml
+  - id: get_uuid
+    type: tool
+    tool: http_uuid
+    arguments:
+      headers:
+        X-Demo: yaml-driven
+```
+
+When `arguments` is present, the demo passes that JSON object to the tool call automatically, so you don't need to hard-code Rust for per-tool inputs.
+
+### One-call runner
+`FlowBuilder::run_sequential_flow` now handles: planning, tool execution, appending tool outputs to the user task, flattening the agent pipeline, and running the orchestrator. The example `main.rs` shows the minimal setup—provide a provider, FlowContext, and tool registry, plus an optional event callback for logging.

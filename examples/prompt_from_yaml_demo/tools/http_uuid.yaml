@@ -1,0 +1,5 @@
+name: http_uuid
+description: Fetch a fresh UUID from httpbin.org
+method: GET
+url: https://httpbin.org/uuid
+response: json

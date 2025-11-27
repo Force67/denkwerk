@@ -1,0 +1,8 @@
+name: search_tool
+description: Example search REST tool
+method: GET
+url: https://example.com/search
+query:
+  q:
+    type: string
+    description: Search query

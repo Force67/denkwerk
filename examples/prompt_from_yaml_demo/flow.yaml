@@ -32,6 +32,9 @@ tools:
   - id: math_tool
     kind: function
     function: math_add
+  - id: http_uuid
+    kind: http
+    spec: tools/http_uuid.yaml
 
 flows:
   - id: main
@@ -39,9 +42,20 @@ flows:
     nodes:
       - id: start
         type: input
+        outputs:
+          - label: to_uuid
+      - id: get_uuid
+        type: tool
+        tool: http_uuid
+        inputs:
+          - from: start:to_uuid
+        outputs:
+          - label: to_research
       - id: research
         type: agent
         agent: researcher
+        inputs:
+          - from: get_uuid:to_research
       - id: fork_analysis
         type: parallel
         converge: true
@@ -78,7 +92,9 @@ flows:
       - id: end
         type: output
     edges:
-      - from: start
+      - from: start:to_uuid
+        to: get_uuid
+      - from: get_uuid:to_research
         to: research
       - from: research
         to: fork_analysis
@@ -132,3 +148,19 @@ flows:
         to: facts_agent
       - from: facts_agent
         to: facts_end
+
+  - id: http_demo
+    entry: h_start
+    nodes:
+      - id: h_start
+        type: input
+      - id: call_http
+        type: tool
+        tool: http_uuid
+      - id: h_end
+        type: output
+    edges:
+      - from: h_start
+        to: call_http
+      - from: call_http
+        to: h_end

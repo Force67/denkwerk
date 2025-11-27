@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+pub mod http;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;

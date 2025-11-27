@@ -21,7 +21,7 @@ agents:
 tools:
   - id: search_tool
     kind: http
-    spec: tools/search.json
+    spec: tools/search.yaml
   - id: ticket_tool
     kind: internal
     function: create_ticket

@@ -1,17 +1,21 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::fs;
-#[cfg(test)]
-use serde_json::Value;
 use meval;
 
-use super::sequential::SequentialOrchestrator;
+use super::sequential::{SequentialEvent, SequentialOrchestrator, SequentialRun};
 use crate::flows::handoffflow::{HandoffDirective, HandoffMatcher, HandoffRule};
-use crate::{agents::Agent, functions::FunctionRegistry, LLMProvider};
+use crate::functions::http::load_http_function;
+use crate::{
+    agents::{Agent, AgentError},
+    functions::{FunctionCall, FunctionRegistry},
+    LLMProvider,
+};
 
 fn default_version() -> String {
     "0.1".to_string()
@@ -210,6 +214,8 @@ pub enum FlowNodeKind {
     },
     Tool {
         tool: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arguments: Option<serde_json::Value>,
     },
     Merge {},
     Parallel {
@@ -318,6 +324,28 @@ pub enum FlowLoadError {
     NoMatchingEdge(String),
     #[error("subflow recursion detected at {0}")]
     SubflowCycle(String),
+}
+
+#[derive(Debug, Error)]
+pub enum ToolExecutionError {
+    #[error("tool registry not found for {0}")]
+    RegistryMissing(String),
+    #[error("tool {0} failed: {1}")]
+    InvocationFailed(String, String),
+    #[error("tool {0} expected an object for arguments")]
+    InvalidArguments(String),
+}
+
+#[derive(Debug, Error)]
+pub enum FlowRunError {
+    #[error(transparent)]
+    Load(#[from] FlowLoadError),
+    #[error(transparent)]
+    Tool(#[from] ToolExecutionError),
+    #[error(transparent)]
+    Agent(#[from] AgentError),
+    #[error("no agent steps in flow {0}")]
+    NoAgents(String),
 }
 
 pub struct FlowBuilder {
@@ -552,10 +580,34 @@ impl FlowBuilder {
         functions: &HashMap<String, Arc<dyn crate::functions::KernelFunction>>,
     ) -> Result<HashMap<String, Arc<FunctionRegistry>>, FlowLoadError> {
         let mut registries = HashMap::new();
+        let mut resolved_functions: HashMap<String, Arc<dyn crate::functions::KernelFunction>> = functions.clone();
+
+        // Auto-load HTTP specs into the local function map when no function is supplied.
+        for tool in &self.document.tools {
+            if tool.function.is_none() && tool.kind == "http" {
+                if let Some(spec_path) = &tool.spec {
+                    // Only load if not already provided
+                    if !resolved_functions.contains_key(&tool.id) {
+                        match load_http_function(&self.base_dir, spec_path, &tool.id) {
+                            Ok(func) => {
+                                resolved_functions.insert(tool.id.clone(), func.clone());
+                                resolved_functions.insert(spec_path.clone(), func.clone());
+                                if let Some(abs) = self.base_dir.join(spec_path).to_str() {
+                                    resolved_functions.insert(format!("http:{}", abs), func.clone());
+                                }
+                            }
+                            Err(err) => {
+                                return Err(FlowLoadError::ToolResolution(tool.id.clone(), err.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         for tool in &self.document.tools {
             let mut registry = FunctionRegistry::new();
-            let func = self.resolve_tool_function(tool, functions)?;
+            let func = self.resolve_tool_function(tool, &resolved_functions)?;
             registry.register(func);
             registries.insert(tool.id.clone(), Arc::new(registry));
         }
@@ -671,8 +723,62 @@ impl FlowBuilder {
                         converge,
                     })
                 }
+                PlannedStep::Tool { tool, arguments } => Ok(ExecutionStep::Tool { tool, arguments }),
             })
             .collect()
+    }
+
+    /// Convenience: execute tool nodes in the plan, flatten the remaining agent
+    /// pipeline, and optionally emit step events through the provided callback.
+    pub async fn run_sequential_flow<F>(
+        &self,
+        flow_id: &str,
+        ctx: &FlowContext,
+        tool_registries: &HashMap<String, Arc<FunctionRegistry>>,
+        provider: Arc<dyn LLMProvider>,
+        task: String,
+        event_callback: Option<F>,
+    ) -> Result<(SequentialRun, Vec<ToolRunResult>), FlowRunError>
+    where
+        F: Fn(&SequentialEvent) + Send + Sync + 'static,
+    {
+        let plan = self.build_execution_plan(flow_id, ctx, tool_registries)?;
+
+        let tool_runs = execute_tool_steps(&plan, tool_registries).await?;
+        let mut task_with_tools = task.clone();
+        for run in &tool_runs {
+            task_with_tools.push_str(&format!("\n[tool:{}] {}\n", run.tool, run.value));
+        }
+
+        let pipeline = flatten_agent_pipeline(&plan);
+        if pipeline.is_empty() {
+            return Err(FlowRunError::NoAgents(flow_id.to_string()));
+        }
+
+        let model_lookup: HashMap<String, String> = self
+            .document
+            .agents
+            .iter()
+            .map(|a| (a.id.clone(), a.model.clone()))
+            .collect();
+
+        let model = model_lookup
+            .get(pipeline[0].name())
+            .cloned()
+            .unwrap_or_else(|| "gpt-4o".to_string());
+
+        let orchestrator = {
+            let base = SequentialOrchestrator::new(provider, model).with_agents(pipeline);
+            if let Some(cb) = event_callback {
+                base.with_event_callback(cb)
+            } else {
+                base
+            }
+        };
+
+        let run = orchestrator.run(task_with_tools).await?;
+
+        Ok((run, tool_runs))
     }
 
     fn plan_steps(
@@ -705,6 +811,9 @@ impl FlowBuilder {
                         id: agent.clone(),
                         params: parameters.clone(),
                     }));
+                }
+                FlowNodeKind::Tool { tool, arguments } => {
+                    steps.push(PlannedStep::Tool { tool: tool.clone(), arguments: arguments.clone() });
                 }
                 FlowNodeKind::Parallel { converge } => {
                     let converge = converge.unwrap_or(true);
@@ -754,7 +863,6 @@ impl FlowBuilder {
                     }
                 }
                 FlowNodeKind::Decision { .. } => {}
-                FlowNodeKind::Tool { .. } => {}
                 FlowNodeKind::Merge {} => {}
                 FlowNodeKind::Loop { .. } => {}
                 FlowNodeKind::Subflow { flow } => {
@@ -995,6 +1103,10 @@ pub struct PlannedAgent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlannedStep {
     Agent(PlannedAgent),
+    Tool {
+        tool: String,
+        arguments: Option<serde_json::Value>,
+    },
     Parallel {
         branches: Vec<Vec<PlannedAgent>>,
         converge: bool,
@@ -1004,10 +1116,86 @@ pub enum PlannedStep {
 #[derive(Debug, Clone)]
 pub enum ExecutionStep {
     Agent(Agent),
+    Tool {
+        tool: String,
+        arguments: Option<serde_json::Value>,
+    },
     Parallel {
         branches: Vec<Vec<Agent>>,
         converge: bool,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolRunResult {
+    pub tool: String,
+    pub value: serde_json::Value,
+}
+
+/// Flatten a mixed execution plan (agents, tools, parallel branches) into a simple
+/// sequential agent pipeline. Tool steps are skipped and parallel branches are
+/// concatenated in order, which mirrors the simple demo semantics.
+pub fn flatten_agent_pipeline(steps: &[ExecutionStep]) -> Vec<Agent> {
+    let mut pipeline = Vec::new();
+    for step in steps {
+        match step {
+            ExecutionStep::Agent(agent) => pipeline.push(agent.clone()),
+            ExecutionStep::Parallel { branches, .. } => {
+                for branch in branches {
+                    for agent in branch {
+                        pipeline.push(agent.clone());
+                    }
+                }
+            }
+            ExecutionStep::Tool { .. } => {}
+        }
+    }
+    pipeline
+}
+
+/// Execute all tool steps in a plan, returning their outputs in order.
+/// Tool arguments must be JSON objects; a missing or invalid registry results in an error.
+pub async fn execute_tool_steps(
+    steps: &[ExecutionStep],
+    tool_registries: &HashMap<String, Arc<FunctionRegistry>>,
+) -> Result<Vec<ToolRunResult>, ToolExecutionError> {
+    let mut results = Vec::new();
+
+    for step in steps {
+        if let ExecutionStep::Tool { tool, arguments } = step {
+            let registry = tool_registries
+                .get(tool)
+                .ok_or_else(|| ToolExecutionError::RegistryMissing(tool.clone()))?;
+
+            let args = arguments.clone().unwrap_or_else(|| Value::Object(Default::default()));
+            let arguments_obj = match args {
+                Value::Object(map) => Value::Object(map),
+                _ => return Err(ToolExecutionError::InvalidArguments(tool.clone())),
+            };
+
+            let call = FunctionCall {
+                name: registry
+                    .definitions()
+                    .first()
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| tool.clone()),
+                arguments: arguments_obj,
+                raw_arguments: None,
+            };
+
+            let value = registry
+                .invoke(&call)
+                .await
+                .map_err(|err| ToolExecutionError::InvocationFailed(tool.clone(), err.to_string()))?;
+
+            results.push(ToolRunResult {
+                tool: tool.clone(),
+                value,
+            });
+        }
+    }
+
+    Ok(results)
 }
 
 impl FlowContext {
@@ -1438,7 +1626,7 @@ flows:
             panic!("expected decision node");
         }
 
-        assert!(matches!(&flow.nodes[3].kind, FlowNodeKind::Tool { tool } if tool == "search"));
+        assert!(matches!(&flow.nodes[3].kind, FlowNodeKind::Tool { tool, arguments: _ } if tool == "search"));
         assert!(matches!(flow.nodes[4].kind, FlowNodeKind::Merge {}));
         assert!(matches!(flow.nodes[5].kind, FlowNodeKind::Loop { max_iterations: 3, condition: Some(_)}));
         assert!(matches!(flow.nodes[6].kind, FlowNodeKind::Parallel { converge: Some(false) }));
@@ -2160,6 +2348,85 @@ flows:
         assert!(registries.contains_key("search_tool"));
         let defs = registries.get("search_tool").unwrap().definitions();
         assert_eq!(defs[0].name, "dummy");
+    }
+
+    #[test]
+    fn plans_tool_nodes_into_execution_steps() {
+        let yaml = r#"
+agents:
+  - id: a1
+    model: m
+tools:
+  - id: t1
+    kind: internal
+    function: f1
+flows:
+  - id: main
+    entry: n1
+    nodes:
+      - id: n1
+        type: input
+      - id: tool
+        type: tool
+        tool: t1
+      - id: n2
+        type: output
+    edges:
+      - from: n1
+        to: tool
+      - from: tool
+        to: n2
+"#;
+
+        let builder = FlowBuilder::from_yaml_str(".", yaml).expect("builder");
+        let steps = builder
+            .plan_execution_steps("main", &FlowContext::default())
+            .expect("steps");
+        assert!(matches!(&steps[0], PlannedStep::Tool { tool, arguments: None } if tool == "t1"));
+    }
+
+    #[test]
+    fn autoloads_http_tool_from_spec_file() {
+        let temp_dir = temp_dir().join("http_tool_autoload");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let spec_path = temp_dir.join("search.yaml");
+        std::fs::write(
+            &spec_path,
+            r#"
+name: search_tool
+description: Simple search proxy
+method: GET
+url: https://example.com/search
+query:
+  q:
+    type: string
+    description: Query
+"#,
+        )
+        .unwrap();
+
+        let yaml = r#"
+tools:
+  - id: search_tool
+    kind: http
+    spec: search.yaml
+flows:
+  - id: main
+    entry: n1
+    nodes:
+      - id: n1
+        type: input
+      - id: n2
+        type: output
+"#;
+
+        let functions = HashMap::new();
+
+        let builder = FlowBuilder::from_yaml_str(&temp_dir, yaml).expect("builder");
+        let registries = builder.build_tool_registries(&functions).expect("registries");
+        let defs = registries.get("search_tool").unwrap().definitions();
+        assert_eq!(defs[0].name, "search_tool");
+        assert_eq!(defs[0].description.as_deref(), Some("Simple search proxy"));
     }
 
     #[tokio::test]

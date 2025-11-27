@@ -359,7 +359,7 @@ impl Application for FlowEditor {
                 if let Some(node) = self.selected_node_mut() {
                     match &mut node.kind {
                         FlowNodeKind::Agent { agent: a, .. } => *a = agent.clone(),
-                        FlowNodeKind::Tool { tool } => *tool = agent.clone(),
+                        FlowNodeKind::Tool { tool, .. } => *tool = agent.clone(),
                         _ => {}
                     }
                 }
@@ -707,7 +707,7 @@ impl FlowEditor {
                     ]
                     .spacing(6)
                     .into(),
-                    FlowNodeKind::Tool { tool } => {
+                    FlowNodeKind::Tool { tool, .. } => {
                         column![text_input("tool id", tool).on_input(Message::UpdateAgentId)].into()
                     }
                     FlowNodeKind::Merge {} => column![text("Merge node")].into(),
@@ -838,7 +838,16 @@ fn default_node(template: NodeTemplate) -> (FlowNodeKind, Vec<NodeOutput>) {
             NodeOutput { label: "yes".to_string(), condition: Some("yes".to_string()) },
             NodeOutput { label: "no".to_string(), condition: Some("no".to_string()) },
         ]),
-        NodeTemplate::Tool => (FlowNodeKind::Tool { tool: "tool_id".to_string() }, vec![NodeOutput { label: "out".to_string(), condition: None }]),
+        NodeTemplate::Tool => (
+            FlowNodeKind::Tool {
+                tool: "tool_id".to_string(),
+                arguments: None,
+            },
+            vec![NodeOutput {
+                label: "out".to_string(),
+                condition: None,
+            }],
+        ),
         NodeTemplate::Merge => (FlowNodeKind::Merge {}, vec![NodeOutput { label: "out".to_string(), condition: None }]),
         NodeTemplate::Parallel => (FlowNodeKind::Parallel { converge: Some(true) }, vec![NodeOutput { label: "out".to_string(), condition: None }]),
         NodeTemplate::Loop => (FlowNodeKind::Loop { max_iterations: 3, condition: None }, vec![NodeOutput { label: "next".to_string(), condition: None }]),
