@@ -823,6 +823,8 @@ fn default_document() -> FlowDocument {
                 kind: FlowNodeKind::Input {},
             }],
             edges: vec![],
+            group_chat: None,
+            handoff: None,
         }],
     }
 }

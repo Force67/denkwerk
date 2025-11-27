@@ -35,6 +35,11 @@ pub use flows::spec::{
     FlowDefinition,
     FlowDocument,
     FlowEdge,
+    GroupChatOptions,
+    HandoffAlias,
+    HandoffMatcherDefinition,
+    HandoffOptions,
+    HandoffRuleDefinition,
     FlowMetadata,
     FlowNode,
     NodeBase as FlowNodeBase,
@@ -49,6 +54,8 @@ pub use flows::spec::{
     PromptDefinition as FlowPromptDefinition,
     RetryPolicy as FlowRetryPolicy,
     ToolDefinition as FlowToolDefinition,
+    PlannedStep,
+    ExecutionStep,
 };
 pub use flows::magentic::{
     MagenticDecision,

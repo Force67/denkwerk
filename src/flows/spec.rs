@@ -10,6 +10,7 @@ use serde_json::Value;
 use meval;
 
 use super::sequential::SequentialOrchestrator;
+use crate::flows::handoffflow::{HandoffDirective, HandoffMatcher, HandoffRule};
 use crate::{agents::Agent, functions::FunctionRegistry, LLMProvider};
 
 fn default_version() -> String {
@@ -101,6 +102,57 @@ pub struct FlowDefinition {
     pub nodes: Vec<FlowNode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edges: Vec<FlowEdge>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_chat: Option<GroupChatOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<HandoffOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct GroupChatOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_rounds: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_prompt_frequency: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct HandoffOptions {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<HandoffRuleDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<HandoffAlias>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_handoffs: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HandoffAlias {
+    pub alias: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HandoffRuleDefinition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(flatten)]
+    pub matcher: HandoffMatcherDefinition,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "matcher", rename_all = "snake_case")]
+pub enum HandoffMatcherDefinition {
+    KeywordsAny { keywords: Vec<String> },
+    KeywordsAll { keywords: Vec<String> },
+    Regex { pattern: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -254,6 +306,14 @@ pub enum FlowLoadError {
     MissingOutput(String),
     #[error("unsupported node type {0} in sequential planner")]
     UnsupportedNode(String),
+    #[error("parallel node {0} has no outgoing branches")]
+    MissingParallelBranches(String),
+    #[error("parallel branches from {0} must converge to the same target")]
+    ParallelConvergence(String),
+    #[error("invalid regex '{1}' for handoff rule {0}")]
+    InvalidRegex(String, String),
+    #[error("unable to resolve tool {0}: {1}")]
+    ToolResolution(String, String),
     #[error("no matching edge from node {0}")]
     NoMatchingEdge(String),
     #[error("subflow recursion detected at {0}")]
@@ -281,6 +341,14 @@ impl FlowBuilder {
 
     pub fn document(&self) -> &FlowDocument {
         &self.document
+    }
+
+    fn flow(&self, flow_id: &str) -> Result<&FlowDefinition, FlowLoadError> {
+        self.document
+            .flows
+            .iter()
+            .find(|f| f.id == flow_id)
+            .ok_or_else(|| FlowLoadError::FlowNotFound(flow_id.to_string()))
     }
 
     pub fn build_agents(
@@ -400,6 +468,7 @@ impl FlowBuilder {
         flow_id: &str,
         tool_registries: &HashMap<String, Arc<FunctionRegistry>>,
     ) -> Result<crate::flows::group_chat::GroupChatOrchestrator<crate::flows::group_chat::RoundRobinGroupChatManager>, FlowLoadError> {
+        let flow = self.flow(flow_id)?;
         let agents = self.build_agents(tool_registries)?;
         let roster = self.flow_agents(flow_id)?;
         let model = self
@@ -415,10 +484,18 @@ impl FlowBuilder {
             .filter_map(|id| agents.get(&id).cloned())
             .collect::<Vec<_>>();
 
+        let manager = if let Some(opts) = &flow.group_chat {
+            crate::flows::group_chat::RoundRobinGroupChatManager::new()
+                .with_maximum_rounds(opts.maximum_rounds)
+                .with_user_prompt_frequency(opts.user_prompt_frequency)
+        } else {
+            crate::flows::group_chat::RoundRobinGroupChatManager::new()
+        };
+
         Ok(crate::flows::group_chat::GroupChatOrchestrator::new(
             provider,
             model,
-            crate::flows::group_chat::RoundRobinGroupChatManager::new(),
+            manager,
         )
         .with_agents(pipeline))
     }
@@ -429,6 +506,7 @@ impl FlowBuilder {
         flow_id: &str,
         tool_registries: &HashMap<String, Arc<FunctionRegistry>>,
     ) -> Result<crate::flows::handoffflow::HandoffOrchestrator, FlowLoadError> {
+        let flow = self.flow(flow_id)?;
         let agents = self.build_agents(tool_registries)?;
         let roster = self.flow_agents(flow_id)?;
         let model = self
@@ -440,6 +518,27 @@ impl FlowBuilder {
             .unwrap_or_else(|| "gpt-4o".to_string());
 
         let mut orchestrator = crate::flows::handoffflow::HandoffOrchestrator::new(provider, model);
+
+        if let Some(opts) = &flow.handoff {
+            if let Some(max_handoffs) = opts.max_handoffs {
+                orchestrator = orchestrator.with_max_handoffs(Some(max_handoffs));
+            }
+            if let Some(rounds) = opts.max_rounds {
+                orchestrator = orchestrator.with_max_rounds(rounds);
+            }
+            if let Some(timeout) = opts.llm_timeout_ms {
+                orchestrator = orchestrator.with_llm_timeout_ms(timeout);
+            }
+
+            for alias in &opts.aliases {
+                orchestrator.add_alias(alias.alias.clone(), alias.target.clone());
+            }
+
+            for rule in &opts.rules {
+                orchestrator.define_handoff(handoff_rule_from_definition(rule)?);
+            }
+        }
+
         for id in roster {
             if let Some(agent) = agents.get(&id) {
                 orchestrator.register_agent(agent.clone());
@@ -456,18 +555,50 @@ impl FlowBuilder {
 
         for tool in &self.document.tools {
             let mut registry = FunctionRegistry::new();
-            if let Some(function_name) = &tool.function {
-                let func = functions
-                    .get(function_name)
-                    .ok_or_else(|| FlowLoadError::FunctionNotFound(tool.id.clone(), function_name.clone()))?;
-                registry.register(func.clone());
-            } else {
-                return Err(FlowLoadError::ToolNotFound(tool.id.clone()));
-            }
+            let func = self.resolve_tool_function(tool, functions)?;
+            registry.register(func);
             registries.insert(tool.id.clone(), Arc::new(registry));
         }
 
         Ok(registries)
+    }
+
+    fn resolve_tool_function(
+        &self,
+        tool: &ToolDefinition,
+        functions: &HashMap<String, Arc<dyn crate::functions::KernelFunction>>,
+    ) -> Result<Arc<dyn crate::functions::KernelFunction>, FlowLoadError> {
+        if let Some(function_name) = &tool.function {
+            let func = functions
+                .get(function_name)
+                .ok_or_else(|| FlowLoadError::FunctionNotFound(tool.id.clone(), function_name.clone()))?;
+            return Ok(func.clone());
+        }
+
+        let mut candidates = Vec::new();
+        candidates.push(tool.id.clone());
+        if let Some(spec) = &tool.spec {
+            candidates.push(spec.clone());
+            candidates.push(format!("{}:{}", tool.kind, spec));
+            let joined = self.base_dir.join(spec);
+            if let Some(path) = joined.to_str() {
+                candidates.push(path.to_string());
+                candidates.push(format!("{}:{}", tool.kind, path));
+            }
+        }
+
+        for key in candidates {
+            if let Some(func) = functions.get(&key) {
+                return Ok(func.clone());
+            }
+        }
+
+        let detail = tool
+            .spec
+            .clone()
+            .or_else(|| tool.function.clone())
+            .unwrap_or_else(|| "no function or spec provided".to_string());
+        Err(FlowLoadError::ToolResolution(tool.id.clone(), detail))
     }
 
     pub fn plan_sequential_path(
@@ -489,6 +620,252 @@ impl FlowBuilder {
             result.push(agent);
         }
         Ok(result)
+    }
+
+    pub fn plan_execution_steps(
+        &self,
+        flow_id: &str,
+        ctx: &FlowContext,
+    ) -> Result<Vec<PlannedStep>, FlowLoadError> {
+        let mut visited_flows = Vec::new();
+        self.plan_steps(flow_id, ctx, &mut visited_flows)
+    }
+
+    pub fn build_execution_plan(
+        &self,
+        flow_id: &str,
+        ctx: &FlowContext,
+        tool_registries: &HashMap<String, Arc<FunctionRegistry>>,
+    ) -> Result<Vec<ExecutionStep>, FlowLoadError> {
+        let planned = self.plan_execution_steps(flow_id, ctx)?;
+        let agents = self.build_agents(tool_registries)?;
+
+        planned
+            .into_iter()
+            .map(|step| match step {
+                PlannedStep::Agent(plan) => {
+                    let agent = agents
+                        .get(&plan.id)
+                        .cloned()
+                        .ok_or_else(|| FlowLoadError::AgentNotFound(plan.id.clone()))?;
+                    Ok(ExecutionStep::Agent(apply_call_settings(agent, plan.params.as_ref())))
+                }
+                PlannedStep::Parallel { branches, converge } => {
+                    let mapped = branches
+                        .into_iter()
+                        .map(|branch| {
+                            branch
+                                .into_iter()
+                                .map(|plan| {
+                                    let agent = agents
+                                        .get(&plan.id)
+                                        .cloned()
+                                        .ok_or_else(|| FlowLoadError::AgentNotFound(plan.id.clone()))?;
+                                    Ok(apply_call_settings(agent, plan.params.as_ref()))
+                                })
+                                .collect::<Result<Vec<_>, FlowLoadError>>()
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(ExecutionStep::Parallel {
+                        branches: mapped,
+                        converge,
+                    })
+                }
+            })
+            .collect()
+    }
+
+    fn plan_steps(
+        &self,
+        flow_id: &str,
+        ctx: &FlowContext,
+        visited_flows: &mut Vec<String>,
+    ) -> Result<Vec<PlannedStep>, FlowLoadError> {
+        if visited_flows.contains(&flow_id.to_string()) {
+            return Err(FlowLoadError::SubflowCycle(flow_id.to_string()));
+        }
+        visited_flows.push(flow_id.to_string());
+
+        let flow = self.flow(flow_id)?;
+        let mut current = flow.entry.clone();
+        let mut steps = Vec::new();
+        let mut loop_counters: HashMap<String, u32> = HashMap::new();
+
+        loop {
+            let node = flow
+                .nodes
+                .iter()
+                .find(|n| n.base.id == current)
+                .ok_or_else(|| FlowLoadError::NodeNotFound(current.clone()))?;
+
+            match &node.kind {
+                FlowNodeKind::Input {} => {}
+                FlowNodeKind::Agent { agent, parameters, .. } => {
+                    steps.push(PlannedStep::Agent(PlannedAgent {
+                        id: agent.clone(),
+                        params: parameters.clone(),
+                    }));
+                }
+                FlowNodeKind::Parallel { converge } => {
+                    let converge = converge.unwrap_or(true);
+                    let outgoing: Vec<&FlowEdge> = flow
+                        .edges
+                        .iter()
+                        .filter(|e| edge_base(&e.from) == node.base.id)
+                        .collect();
+
+                    if outgoing.is_empty() {
+                        return Err(FlowLoadError::MissingParallelBranches(node.base.id.clone()));
+                    }
+
+                    let mut branches = Vec::new();
+                    let mut join_target: Option<Option<String>> = None;
+                    for edge in outgoing {
+                        let (branch, join) = self.collect_parallel_branch(
+                            flow,
+                            &edge.to,
+                            ctx,
+                            visited_flows,
+                            HashMap::new(),
+                        )?;
+                        branches.push(branch);
+
+                        if converge {
+                            if let Some(existing) = &join_target {
+                                if existing != &join {
+                                    return Err(FlowLoadError::ParallelConvergence(node.base.id.clone()));
+                                }
+                            }
+                            if join_target.is_none() {
+                                join_target = Some(join.clone());
+                            }
+                        } else if join_target.is_none() {
+                            join_target = Some(join.clone());
+                        }
+                    }
+
+                    steps.push(PlannedStep::Parallel { branches, converge });
+
+                    if let Some(next) = join_target.flatten() {
+                        current = next;
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+                FlowNodeKind::Decision { .. } => {}
+                FlowNodeKind::Tool { .. } => {}
+                FlowNodeKind::Merge {} => {}
+                FlowNodeKind::Loop { .. } => {}
+                FlowNodeKind::Subflow { flow } => {
+                    let mut nested = self.plan_steps(flow, ctx, visited_flows)?;
+                    steps.append(&mut nested);
+                }
+                FlowNodeKind::Output {} => break,
+            }
+
+            let next = self.next_node(flow, node, ctx, &mut loop_counters)?;
+            match next {
+                Some(next_id) => {
+                    current = next_id;
+                }
+                None => break,
+            }
+        }
+
+        visited_flows.retain(|f| f != flow_id);
+        Ok(steps)
+    }
+
+    fn collect_parallel_branch(
+        &self,
+        flow: &FlowDefinition,
+        start: &str,
+        ctx: &FlowContext,
+        visited_flows: &mut Vec<String>,
+        mut loop_counters: HashMap<String, u32>,
+    ) -> Result<(Vec<PlannedAgent>, Option<String>), FlowLoadError> {
+        let mut current = start.to_string();
+        let mut branch = Vec::new();
+
+        loop {
+            let node = flow
+                .nodes
+                .iter()
+                .find(|n| n.base.id == current)
+                .ok_or_else(|| FlowLoadError::NodeNotFound(current.clone()))?;
+
+            match &node.kind {
+                FlowNodeKind::Input {} => {}
+                FlowNodeKind::Agent { agent, parameters, .. } => {
+                    branch.push(PlannedAgent {
+                        id: agent.clone(),
+                        params: parameters.clone(),
+                    });
+                }
+                FlowNodeKind::Decision { .. } => {}
+                FlowNodeKind::Tool { .. } => {}
+                FlowNodeKind::Merge {} => return Ok((branch, Some(node.base.id.clone()))),
+                FlowNodeKind::Parallel { .. } => return Err(FlowLoadError::UnsupportedNode(node.base.id.clone())),
+                FlowNodeKind::Loop { .. } => {}
+                FlowNodeKind::Subflow { flow } => {
+                    let mut nested = self.plan_nodes(flow, ctx, visited_flows)?;
+                    branch.append(&mut nested);
+                }
+                FlowNodeKind::Output {} => return Ok((branch, None)),
+            }
+
+            let next = self.next_node(flow, node, ctx, &mut loop_counters)?;
+            match next {
+                Some(next_id) => current = next_id,
+                None => return Ok((branch, None)),
+            }
+        }
+    }
+
+    fn next_node(
+        &self,
+        flow: &FlowDefinition,
+        node: &FlowNode,
+        ctx: &FlowContext,
+        loop_counters: &mut HashMap<String, u32>,
+    ) -> Result<Option<String>, FlowLoadError> {
+        let outgoing: Vec<&FlowEdge> = flow
+            .edges
+            .iter()
+            .filter(|e| edge_base(&e.from) == node.base.id)
+            .collect();
+
+        if outgoing.is_empty() {
+            return Ok(None);
+        }
+
+        let mut selected: Option<String> = None;
+        let iteration_value = *loop_counters.get(&node.base.id).unwrap_or(&0);
+        for edge in &outgoing {
+            if condition_matches(edge.condition.as_deref(), ctx, Some(iteration_value)) {
+                selected = Some(edge.to.clone());
+                break;
+            }
+        }
+
+        if selected.is_none() {
+            for edge in &outgoing {
+                if edge.condition.is_none() {
+                    selected = Some(edge.to.clone());
+                    break;
+                }
+            }
+        }
+
+        if let FlowNodeKind::Loop { .. } = &node.kind {
+            let counter = loop_counters.entry(node.base.id.clone()).or_insert(0);
+            *counter += 1;
+        }
+
+        selected
+            .ok_or_else(|| FlowLoadError::NoMatchingEdge(node.base.id.clone()))
+            .map(Some)
     }
 
     fn plan_nodes(
@@ -609,10 +986,28 @@ pub struct FlowContext {
     pub vars: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone)]
-struct PlannedAgent {
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedAgent {
     id: String,
     params: Option<CallSettings>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlannedStep {
+    Agent(PlannedAgent),
+    Parallel {
+        branches: Vec<Vec<PlannedAgent>>,
+        converge: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum ExecutionStep {
+    Agent(Agent),
+    Parallel {
+        branches: Vec<Vec<Agent>>,
+        converge: bool,
+    },
 }
 
 impl FlowContext {
@@ -745,6 +1140,32 @@ fn apply_call_settings(agent: Agent, settings: Option<&CallSettings>) -> Agent {
     agent
 }
 
+fn handoff_rule_from_definition(def: &HandoffRuleDefinition) -> Result<HandoffRule, FlowLoadError> {
+    let matcher = handoff_matcher_from_definition(&def.matcher)?;
+    let directive = HandoffDirective {
+        target: def.target.clone(),
+        message: def.message.clone(),
+    };
+
+    Ok(HandoffRule {
+        id: def.id.clone().unwrap_or_default(),
+        matcher,
+        resolve: Arc::new(move |_t, _txt| Some(directive.clone())),
+    })
+}
+
+fn handoff_matcher_from_definition(def: &HandoffMatcherDefinition) -> Result<HandoffMatcher, FlowLoadError> {
+    match def {
+        HandoffMatcherDefinition::KeywordsAny { keywords } => Ok(HandoffMatcher::KeywordsAny(keywords.clone())),
+        HandoffMatcherDefinition::KeywordsAll { keywords } => Ok(HandoffMatcher::KeywordsAll(keywords.clone())),
+        HandoffMatcherDefinition::Regex { pattern } => {
+            let regex = regex::Regex::new(pattern)
+                .map_err(|err| FlowLoadError::InvalidRegex(pattern.clone(), err.to_string()))?;
+            Ok(HandoffMatcher::Regex(regex))
+        }
+    }
+}
+
 fn load_instructions(base_dir: &Path, prompt: Option<&str>) -> Result<String, FlowLoadError> {
     match prompt {
         Some(content_or_path) => {
@@ -765,6 +1186,7 @@ mod tests {
     use crate::providers::scripted::ScriptedProvider;
     use crate::eval::scenario::ScriptedTurn;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::Mutex;
     use crate::functions::{KernelFunction, FunctionDefinition, FunctionParameter, json_schema_for};
 
     fn temp_dir() -> PathBuf {
@@ -1141,6 +1563,8 @@ flows:
                         label: None,
                     },
                 ],
+                group_chat: None,
+                handoff: None,
             }],
         };
 
@@ -1467,6 +1891,78 @@ flows:
         assert_eq!(plan[1].name(), "main_agent");
     }
 
+    #[test]
+    fn plans_parallel_execution_steps() {
+        let yaml = r#"
+agents:
+  - id: left
+    model: m
+    system_prompt: left
+  - id: right
+    model: m
+    system_prompt: right
+  - id: closer
+    model: m
+    system_prompt: close
+flows:
+  - id: main
+    entry: start
+    nodes:
+      - id: start
+        type: input
+      - id: fork
+        type: parallel
+        converge: true
+      - id: left_node
+        type: agent
+        agent: left
+      - id: right_node
+        type: agent
+        agent: right
+      - id: merge
+        type: merge
+      - id: final
+        type: agent
+        agent: closer
+      - id: end
+        type: output
+    edges:
+      - from: start
+        to: fork
+      - from: fork
+        to: left_node
+      - from: fork
+        to: right_node
+      - from: left_node
+        to: merge
+      - from: right_node
+        to: merge
+      - from: merge
+        to: final
+      - from: final
+        to: end
+"#;
+
+        let builder = FlowBuilder::from_yaml_str(".", yaml).expect("builder");
+        let steps = builder.plan_execution_steps("main", &FlowContext::default()).expect("plan");
+
+        assert_eq!(steps.len(), 2, "parallel block + final agent");
+        match &steps[0] {
+            PlannedStep::Parallel { branches, converge } => {
+                assert_eq!(branches.len(), 2);
+                assert!(converge, "parallel should converge by default");
+                let branch_sizes: Vec<_> = branches.iter().map(|b| b.len()).collect();
+                assert_eq!(branch_sizes, vec![1, 1]);
+            }
+            other => panic!("expected parallel step, got {other:?}"),
+        }
+
+        match &steps[1] {
+            PlannedStep::Agent(agent) => assert_eq!(agent.id, "closer"),
+            other => panic!("expected final agent, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn builds_and_runs_concurrent_orchestrator() {
         let yaml = r#"
@@ -1538,6 +2034,53 @@ flows:
         assert_eq!(run.rounds, 6);
     }
 
+    #[tokio::test]
+    async fn applies_group_chat_manager_from_yaml() {
+        let yaml = r#"
+agents:
+  - id: speaker
+    model: scripted
+    system_prompt: chat
+flows:
+  - id: main
+    entry: start
+    group_chat:
+      maximum_rounds: 2
+      user_prompt_frequency: 1
+    nodes:
+      - id: start
+        type: input
+      - id: talker
+        type: agent
+        agent: speaker
+      - id: end
+        type: output
+"#;
+
+        let builder = FlowBuilder::from_yaml_str(".", yaml).expect("builder");
+        let provider = Arc::new(ScriptedProvider::from_scripted_turns(&[
+            ScriptedTurn { agent: "speaker".to_string(), response: "first".to_string(), latency_ms: None },
+            ScriptedTurn { agent: "speaker".to_string(), response: "second".to_string(), latency_ms: None },
+        ]));
+
+        let mut orch = builder.build_group_chat_orchestrator(provider, "main", &HashMap::new()).expect("group chat");
+        let prompts: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let tracker = prompts.clone();
+        orch = orch.with_user_input_callback(move |_transcript| {
+            let mut guard = tracker.lock().unwrap();
+            *guard += 1;
+            Some("user input".to_string())
+        });
+
+        let run = orch.run("hi").await.expect("run");
+        assert_eq!(run.rounds, 2, "maximum rounds from YAML should be respected");
+        assert!(run
+            .events
+            .iter()
+            .any(|e| matches!(e, crate::flows::group_chat::GroupChatEvent::UserMessage { .. })));
+        assert_eq!(*prompts.lock().unwrap(), 1);
+    }
+
     #[test]
     fn builds_handoff_orchestrator() {
         let yaml = r#"
@@ -1562,5 +2105,115 @@ flows:
         let provider = Arc::new(ScriptedProvider::new());
         let orch = builder.build_handoff_orchestrator(provider, "main", &HashMap::new()).expect("handoff");
         assert!(orch.agent("concierge").is_some());
+    }
+
+    #[test]
+    fn resolves_tool_by_spec_identifier() {
+        use crate::functions::{KernelFunction, FunctionDefinition};
+
+        struct Dummy;
+        #[async_trait::async_trait]
+        impl KernelFunction for Dummy {
+            fn definition(&self) -> FunctionDefinition {
+                FunctionDefinition::new("dummy")
+            }
+
+            async fn invoke(&self, _arguments: &Value) -> Result<Value, crate::LLMError> {
+                Ok(Value::Null)
+            }
+        }
+
+        let dir = temp_dir();
+        let spec_path = dir.join("tools").join("search.json");
+        std::fs::create_dir_all(spec_path.parent().unwrap()).unwrap();
+        std::fs::write(&spec_path, "{}").unwrap();
+
+        let yaml = format!(
+            r#"
+tools:
+  - id: search_tool
+    kind: http
+    spec: {}
+flows:
+  - id: main
+    entry: n1
+    nodes:
+      - id: n1
+        type: input
+      - id: n2
+        type: output
+"#,
+            spec_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        );
+
+        let mut functions = HashMap::new();
+        functions.insert(
+            format!("http:{}", spec_path.display()),
+            Arc::new(Dummy) as Arc<dyn KernelFunction>,
+        );
+
+        let builder = FlowBuilder::from_yaml_str(spec_path.parent().unwrap(), &yaml).expect("builder");
+        let registries = builder.build_tool_registries(&functions).expect("registries");
+        assert!(registries.contains_key("search_tool"));
+        let defs = registries.get("search_tool").unwrap().definitions();
+        assert_eq!(defs[0].name, "dummy");
+    }
+
+    #[tokio::test]
+    async fn builds_handoff_rules_from_yaml() {
+        let yaml = r#"
+agents:
+  - id: concierge
+    model: scripted
+    system_prompt: frontdesk
+  - id: weather
+    model: scripted
+    system_prompt: forecast
+flows:
+  - id: main
+    entry: start
+    handoff:
+      aliases:
+        - alias: wx
+          target: weather
+      rules:
+        - id: weather_rule
+          target: wx
+          matcher: keywords_any
+          keywords: ["weather"]
+      max_handoffs: 1
+      max_rounds: 5
+      llm_timeout_ms: 5000
+    nodes:
+      - id: start
+        type: input
+      - id: concierge_node
+        type: agent
+        agent: concierge
+      - id: weather_node
+        type: agent
+        agent: weather
+      - id: end
+        type: output
+"#;
+
+        let builder = FlowBuilder::from_yaml_str(".", yaml).expect("builder");
+        let provider = Arc::new(ScriptedProvider::from_scripted_turns(&[
+            ScriptedTurn { agent: "concierge".to_string(), response: "the weather is needed".to_string(), latency_ms: None },
+            ScriptedTurn { agent: "weather".to_string(), response: "clear skies".to_string(), latency_ms: None },
+        ]));
+
+        let orch = builder.build_handoff_orchestrator(provider, "main", &HashMap::new()).expect("handoff");
+        let mut session = orch.session("concierge").expect("session");
+        let turn = session.send("hi").await.expect("send");
+
+        assert!(matches!(
+            turn.events.iter().find(|e| matches!(e, crate::flows::handoffflow::HandoffEvent::HandOff { .. })),
+            Some(crate::flows::handoffflow::HandoffEvent::HandOff { to, .. }) if to == "weather"
+        ));
+        assert_eq!(turn.reply.as_deref(), Some("clear skies"));
     }
 }

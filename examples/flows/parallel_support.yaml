@@ -1,0 +1,113 @@
+version: 0.1
+metadata:
+  name: parallel_support
+  description: Fan out intents to specialized agents, then merge.
+  tags: [demo, parallel]
+
+agents:
+  - id: triage
+    model: openai/gpt-4o-mini
+    description: Routes the request to either billing or tech.
+    system_prompt: prompts/classify.md
+  - id: billing_agent
+    model: openai/gpt-4o
+    name: Billing
+    description: Solves billing and subscription issues.
+    tools: [billing_tool]
+  - id: tech_agent
+    model: openai/gpt-4o
+    name: Tech
+    description: Handles technical troubleshooting.
+    tools: [status_tool]
+
+tools:
+  - id: billing_tool
+    kind: internal
+    function: create_ticket
+  - id: status_tool
+    kind: http
+    spec: tools/status.json
+
+flows:
+  - id: main
+    kind: parallel
+    entry: n_start
+    nodes:
+      - id: n_start
+        type: input
+        outputs:
+          - label: out
+
+      - id: n_triage
+        type: decision
+        name: route intent
+        prompt: classify_prompt
+        inputs:
+          - from: n_start/out
+        outputs:
+          - label: billing
+            condition: "intent == 'billing'"
+          - label: tech
+            condition: "intent == 'tech'"
+          - label: both
+            condition: else
+
+      - id: n_parallel
+        type: parallel
+        converge: true
+        inputs:
+          - from: n_triage/both
+        outputs:
+          - label: billing
+          - label: tech
+
+      - id: n_billing
+        type: agent
+        agent: billing_agent
+        inputs:
+          - from: n_triage/billing
+          - from: n_parallel/billing
+        outputs:
+          - label: done
+
+      - id: n_tech
+        type: agent
+        agent: tech_agent
+        inputs:
+          - from: n_triage/tech
+          - from: n_parallel/tech
+        outputs:
+          - label: done
+
+      - id: n_merge
+        type: merge
+        inputs:
+          - from: n_billing/done
+          - from: n_tech/done
+        outputs:
+          - label: out
+
+      - id: n_output
+        type: output
+        inputs:
+          - from: n_merge/out
+
+    edges:
+      - from: n_start/out
+        to: n_triage
+      - from: n_triage/billing
+        to: n_billing
+      - from: n_triage/tech
+        to: n_tech
+      - from: n_triage/both
+        to: n_parallel
+      - from: n_parallel/billing
+        to: n_billing
+      - from: n_parallel/tech
+        to: n_tech
+      - from: n_billing/done
+        to: n_merge
+      - from: n_tech/done
+        to: n_merge
+      - from: n_merge/out
+        to: n_output
