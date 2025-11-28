@@ -6,11 +6,13 @@ use crate::{
     LLMProvider,
 };
 
+use serde::Serialize;
+
 use super::handoffflow::AgentAction;
 use crate::shared_state::SharedStateContext;
 use crate::metrics::{AgentMetrics, ExecutionTimer, MetricsCollector, WithMetrics};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum SequentialEvent {
     Step {
         agent: String,

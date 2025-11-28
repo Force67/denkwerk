@@ -1,4 +1,5 @@
 import React from "react";
+import Editor from "@monaco-editor/react";
 
 interface YamlPanelProps {
   yaml: string;
@@ -7,18 +8,34 @@ interface YamlPanelProps {
 }
 
 const YamlPanel: React.FC<YamlPanelProps> = ({ yaml, onDownload, onCopy }) => (
-  <div className="panel-section">
+  <div className="panel-section" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
     <div className="panel-header">
-      <div className="panel-title">YAML</div>
+      <div className="panel-title">YAML Preview</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="ghost small" onClick={onCopy} title="Copy to clipboard">
+          Copy
+        </button>
+        <button className="ghost small" onClick={onDownload} title="Download .yaml file">
+          Download
+        </button>
+      </div>
     </div>
-    <textarea className="yaml-preview" readOnly value={yaml} />
-    <div className="edge-row" style={{ gridTemplateColumns: "1fr auto" }}>
-      <button className="ghost" onClick={onDownload} title="Download .yaml file">
-        Download
-      </button>
-      <button className="ghost" onClick={onCopy}>
-        Copy
-      </button>
+    <div style={{ height: "300px", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, overflow: "hidden" }}>
+      <Editor
+        height="100%"
+        defaultLanguage="yaml"
+        value={yaml}
+        theme="vs-dark"
+        options={{
+          readOnly: true,
+          minimap: { enabled: false },
+          fontSize: 12,
+          lineNumbers: "off",
+          scrollBeyondLastLine: false,
+          fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+          padding: { top: 12, bottom: 12 },
+        }}
+      />
     </div>
   </div>
 );

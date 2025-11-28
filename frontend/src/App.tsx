@@ -9,103 +9,165 @@ import NodeEditor from "./components/NodeEditor";
 import DefinitionList from "./components/DefinitionList";
 import EdgesPanel from "./components/EdgesPanel";
 import YamlPanel from "./components/YamlPanel";
+import { apiClient } from "./services/apiClient";
 
 const starterDoc: FlowDocument = {
   version: "0.1",
   metadata: {
-    name: "support_router",
-    description: "Route inbound chats to the right path.",
-    tags: ["demo", "routing"],
+    name: "Customer Support Triage",
+    description: "Intelligent routing system for inbound customer support tickets.",
+    tags: ["support", "triage", "automation"],
   },
   agents: [
     {
-      id: "support_agent",
+      id: "triage_agent",
       model: "openai/gpt-4o",
-      name: "Support Agent",
-      system_prompt: "prompts/support.md",
-      tools: ["search_tool", "ticket_tool"],
-      defaults: { temperature: 0.3, max_tokens: 512 },
+      name: "Triage Specialist",
+      description: "Analyzes incoming requests to determine the category and urgency.",
+      system_prompt: "prompts/triage.md",
+      defaults: { temperature: 0.0 },
     },
     {
-      id: "router",
+      id: "tech_support",
+      model: "openai/gpt-4o",
+      name: "Technical Support",
+      description: "Resolves technical issues using documentation and diagnostics.",
+      system_prompt: "prompts/tech_ops.md",
+      tools: ["fetch_docs"],
+    },
+    {
+      id: "billing_support",
+      model: "openai/gpt-4o",
+      name: "Billing Specialist",
+      description: "Handles invoices, refunds, and subscription status.",
+      system_prompt: "prompts/billing_policy.md",
+      tools: ["check_status"],
+    },
+    {
+      id: "general_assistant",
       model: "openai/gpt-4o-mini",
-      description: "Routes intents based on signals.",
+      name: "General Assistant",
+      description: "Handles general inquiries and FAQs.",
+      system_prompt: "prompts/general_faq.md",
     },
   ],
   tools: [
-    { id: "search_tool", kind: "http", spec: "tools/search.json" },
-    { id: "ticket_tool", kind: "internal", function: "create_ticket" },
+    {
+      id: "fetch_docs",
+      kind: "http",
+      description: "Search internal technical documentation.",
+      spec: "tools/docs.yaml",
+    },
+    {
+      id: "check_status",
+      kind: "function",
+      description: "Check the status of a user's order or ticket.",
+      function: "check_order_status",
+    },
   ],
   prompts: [
-    { id: "classify_prompt", file: "prompts/classify.md", description: "Intent classifier" },
-    { id: "fallback_prompt", file: "prompts/fallback.md" },
+    { id: "triage_prompt", file: "prompts/triage.md", description: "Classification rules" },
+    { id: "tech_prompt", file: "prompts/tech_ops.md", description: "Debug guidelines" },
+    { id: "billing_prompt", file: "prompts/billing_policy.md", description: "Refund policy" },
   ],
   flows: [
     {
       id: "main",
-      entry: "n_start",
+      entry: "start",
       nodes: [
-        { base: { id: "n_start", outputs: [{ label: "out" }] }, kind: { type: "input" } },
+        {
+          base: { id: "start", name: "Inbound Ticket", outputs: [{ label: "out" }] },
+          kind: { type: "input" },
+        },
         {
           base: {
-            id: "n_route",
-            name: "Route intent",
-            inputs: [{ from: "n_start/out" }],
+            id: "triage_node",
+            name: "Classify Intent",
+            description: "Analyze the user input to determine the correct department.",
+            inputs: [{ from: "start/out" }],
+            outputs: [{ label: "classified" }],
+          },
+          kind: { type: "agent", agent: "triage_agent", prompt: "triage_prompt" },
+        },
+        {
+          base: {
+            id: "router",
+            name: "Route Department",
+            inputs: [{ from: "triage_node/classified" }],
             outputs: [
-              { label: "support", condition: "intent == 'support'" },
-              { label: "sales", condition: "intent == 'sales'" },
-              { label: "fallback" },
+              { label: "tech", condition: "category == 'technical'" },
+              { label: "billing", condition: "category == 'billing'" },
+              { label: "general" },
             ],
           },
-          kind: { type: "decision", prompt: "classify_prompt", strategy: "llm" },
+          kind: { type: "decision", strategy: "llm" },
         },
         {
           base: {
-            id: "n_support",
-            inputs: [{ from: "n_route/support" }],
-            outputs: [{ label: "done" }],
+            id: "tech_node",
+            name: "Tech Support",
+            inputs: [{ from: "router/tech" }],
+            outputs: [{ label: "resolved" }],
           },
-          kind: { type: "agent", agent: "support_agent", tools: ["search_tool"], prompt: "classify_prompt" },
+          kind: { type: "agent", agent: "tech_support", tools: ["fetch_docs"] },
         },
         {
           base: {
-            id: "n_sales",
-            inputs: [{ from: "n_route/sales" }],
-            outputs: [{ label: "done" }],
+            id: "billing_node",
+            name: "Billing Support",
+            inputs: [{ from: "router/billing" }],
+            outputs: [{ label: "resolved" }],
           },
-          kind: { type: "subflow", flow: "sales_flow" },
+          kind: { type: "agent", agent: "billing_support", tools: ["check_status"] },
         },
         {
           base: {
-            id: "n_fallback",
-            inputs: [{ from: "n_route/fallback" }],
-            outputs: [{ label: "done" }],
+            id: "general_node",
+            name: "General Inquiry",
+            inputs: [{ from: "router/general" }],
+            outputs: [{ label: "resolved" }],
           },
-          kind: { type: "agent", agent: "support_agent", prompt: "fallback_prompt" },
+          kind: { type: "agent", agent: "general_assistant" },
         },
         {
           base: {
-            id: "n_merge",
+            id: "merge_node",
+            name: "Consolidate",
             inputs: [
-              { from: "n_support/done" },
-              { from: "n_sales/done" },
-              { from: "n_fallback/done" },
+              { from: "tech_node/resolved" },
+              { from: "billing_node/resolved" },
+              { from: "general_node/resolved" },
             ],
             outputs: [{ label: "out" }],
           },
           kind: { type: "merge" },
         },
-        { base: { id: "n_output", inputs: [{ from: "n_merge/out" }], outputs: [] }, kind: { type: "output" } },
+        {
+          base: {
+            id: "final_check",
+            name: "Quality Assurance",
+            description: "Review the response for tone and accuracy.",
+            inputs: [{ from: "merge_node/out" }],
+            outputs: [{ label: "final" }],
+          },
+          kind: { type: "agent", agent: "triage_agent", prompt: "triage_prompt" },
+        },
+        {
+          base: { id: "end", name: "Send Response", inputs: [{ from: "final_check/final" }] },
+          kind: { type: "output" },
+        },
       ],
       edges: [
-        { from: "n_start/out", to: "n_route" },
-        { from: "n_route/support", to: "n_support" },
-        { from: "n_route/sales", to: "n_sales" },
-        { from: "n_route/fallback", to: "n_fallback" },
-        { from: "n_support/done", to: "n_merge" },
-        { from: "n_sales/done", to: "n_merge" },
-        { from: "n_fallback/done", to: "n_merge" },
-        { from: "n_merge/out", to: "n_output" },
+        { from: "start/out", to: "triage_node" },
+        { from: "triage_node/classified", to: "router" },
+        { from: "router/tech", to: "tech_node", label: "Technical" },
+        { from: "router/billing", to: "billing_node", label: "Billing" },
+        { from: "router/general", to: "general_node", label: "Other" },
+        { from: "tech_node/resolved", to: "merge_node" },
+        { from: "billing_node/resolved", to: "merge_node" },
+        { from: "general_node/resolved", to: "merge_node" },
+        { from: "merge_node/out", to: "final_check" },
+        { from: "final_check/final", to: "end" },
       ],
     },
   ],
@@ -288,6 +350,34 @@ const App: React.FC = () => {
     }
   };
 
+  const handleRun = async () => {
+    const input = window.prompt("Enter task input for the flow:", "Describe the issue...");
+    if (!input) return;
+
+    try {
+      // Check/Prompt for API Key if needed
+      if (!apiClient.getApiKey()) {
+        const key = window.prompt("Enter OpenAI API Key (optional, if not set on server):");
+        if (key) apiClient.setApiKey(key);
+      }
+
+      console.log("Executing flow...", flowDoc);
+      const res = await apiClient.executeFlow(flowDoc, input);
+      
+      if (res.success && res.data) {
+        console.log("Execution Result:", res.data);
+        const output = res.data.final_output || "No output";
+        alert(`Execution Successful!\n\nOutput:\n${output}`);
+      } else {
+        console.error("Execution failed:", res);
+        alert(`Execution Failed: ${res.message || "Unknown error"}`);
+      }
+    } catch (err) {
+      console.error("Execution error:", err);
+      alert(`Error executing flow: ${err}`);
+    }
+  };
+
   if (!activeFlow) return null;
 
   const allowedTypes = allowedByKind[activeFlowKind];
@@ -304,6 +394,7 @@ const App: React.FC = () => {
         onLoadSample={() => setFlowDoc(starterDoc)}
         onReset={() => setFlowDoc({ ...starterDoc, flows: [] })}
         onDownload={downloadYaml}
+        onRun={handleRun}
       />
 
       <div className="canvas-area">
@@ -341,6 +432,10 @@ const App: React.FC = () => {
             {selectedNodeId ? (
               <NodeEditor
                 node={activeFlow.nodes.find((n) => n.base.id === selectedNodeId)!}
+                availableAgents={flowDoc.agents}
+                availableTools={flowDoc.tools}
+                availablePrompts={flowDoc.prompts}
+                availableFlows={flowDoc.flows}
                 onChange={(next) => updateNode(selectedNodeId, next)}
                 onDelete={() => removeNode(selectedNodeId)}
               />

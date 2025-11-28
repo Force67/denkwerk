@@ -121,6 +121,15 @@ button {
   letter-spacing: 0.01em;
   cursor: pointer;
   box-shadow: 0 8px 30px rgba(54, 210, 255, 0.25);
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  filter: brightness(1.1);
+}
+
+button:active {
+  transform: scale(0.98);
 }
 
 button.ghost {
@@ -128,6 +137,19 @@ button.ghost {
   color: #d8ddf4;
   box-shadow: none;
   border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+button.ghost:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+button.ghost.small {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+button.ghost.danger:hover {
+  background: rgba(255, 80, 80, 0.15);
 }
 
 .flow-select {
@@ -161,6 +183,11 @@ button.ghost {
   border-color: transparent;
 }
 
+.panel-input.small {
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
 textarea.panel-input {
   min-height: 80px;
   resize: vertical;
@@ -169,6 +196,47 @@ textarea.panel-input {
 .muted {
   color: #9fa8c4;
   font-size: 13px;
+}
+
+.section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+  color: #58b1ff;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.checkbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 8px;
+  border-radius: 8px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  accent-color: #58b1ff;
+  width: 16px;
+  height: 16px;
+  margin: 0;
 }
 
 .react-flow__handle {

@@ -12,6 +12,7 @@ interface TopBarProps {
   onLoadSample: () => void;
   onReset: () => void;
   onDownload: () => void;
+  onRun: () => void;
 }
 
 const TopBar: React.FC<TopBarProps> = ({
@@ -24,10 +25,15 @@ const TopBar: React.FC<TopBarProps> = ({
   onLoadSample,
   onReset,
   onDownload,
+  onRun,
 }) => (
   <div className="topbar">
     <div className="brand">denkwerk canvas</div>
     <div className="toolbar">
+      <button className="primary" onClick={onRun}>
+        ▶ Run Flow
+      </button>
+      <div className="divider" />
       <select
         className="flow-select"
         value={flowKind}

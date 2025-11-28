@@ -1,29 +1,37 @@
 import React from "react";
-import { DecisionStrategy, FlowNode, NodeOutput } from "../types";
+import {
+  AgentDefinition,
+  DecisionStrategy,
+  FlowDefinition,
+  FlowNode,
+  NodeOutput,
+  PromptDefinition,
+  ToolDefinition,
+} from "../types";
 
 interface NodeEditorProps {
   node: FlowNode;
+  availableAgents: AgentDefinition[];
+  availableTools: ToolDefinition[];
+  availablePrompts: PromptDefinition[];
+  availableFlows: FlowDefinition[];
   onChange: (node: FlowNode) => void;
   onDelete: () => void;
 }
 
-const NodeEditor: React.FC<NodeEditorProps> = ({ node, onChange, onDelete }) => {
+const NodeEditor: React.FC<NodeEditorProps> = ({
+  node,
+  availableAgents,
+  availableTools,
+  availablePrompts,
+  availableFlows,
+  onChange,
+  onDelete,
+}) => {
   const base = node.base;
   const outputsValue = base.outputs ?? [];
 
   const setOutputs = (outputs: NodeOutput[]) => onChange({ ...node, base: { ...base, outputs } });
-  const setInputs = (inputs: string) =>
-    onChange({
-      ...node,
-      base: {
-        ...base,
-        inputs: inputs
-          .split(/\n|,/)
-          .map((x) => x.trim())
-          .filter(Boolean)
-          .map((from) => ({ from })),
-      },
-    });
 
   const updateOutput = (idx: number, next: Partial<NodeOutput>) => {
     const outputs = outputsValue.map((out, i) => (i === idx ? { ...out, ...next } : out));
@@ -33,129 +41,206 @@ const NodeEditor: React.FC<NodeEditorProps> = ({ node, onChange, onDelete }) => 
   const addOutput = () => setOutputs([...outputsValue, { label: "out" }]);
   const removeOutput = (idx: number) => setOutputs(outputsValue.filter((_, i) => i !== idx));
 
+  const toggleTool = (toolId: string) => {
+    if (node.kind.type !== "agent") return;
+    const currentTools = node.kind.tools ?? [];
+    const newTools = currentTools.includes(toolId)
+      ? currentTools.filter((t) => t !== toolId)
+      : [...currentTools, toolId];
+    onChange({ ...node, kind: { ...node.kind, tools: newTools } });
+  };
+
   const renderKindFields = () => {
     switch (node.kind.type) {
       case "agent":
         return (
           <div className="stack">
-            <label className="muted">Agent id</label>
-            <input
-              className="panel-input"
-              value={node.kind.agent}
-              onChange={(e) => onChange({ ...node, kind: { ...node.kind, agent: e.target.value } })}
-              placeholder="support_agent"
-            />
-            <label className="muted">Prompt</label>
-            <input
-              className="panel-input"
-              value={node.kind.prompt ?? ""}
-              onChange={(e) => onChange({ ...node, kind: { ...node.kind, prompt: e.target.value } })}
-              placeholder="prompt id"
-            />
-            <label className="muted">Tools</label>
-            <input
-              className="panel-input"
-              value={(node.kind.tools ?? []).join(", ")}
-              onChange={(e) =>
-                onChange({
-                  ...node,
-                  kind: {
-                    ...node.kind,
-                    tools: e.target.value
-                      .split(",")
-                      .map((x) => x.trim())
-                      .filter(Boolean),
-                  },
-                })
-              }
-              placeholder="tool ids"
-            />
+            <div className="form-group">
+              <label className="muted">Agent</label>
+              <select
+                className="panel-input"
+                value={node.kind.agent}
+                onChange={(e) => onChange({ ...node, kind: { ...node.kind, agent: e.target.value } })}
+              >
+                <option value="" disabled>
+                  Select an agent
+                </option>
+                {availableAgents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name || a.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label className="muted">Prompt Override (Optional)</label>
+              <select
+                className="panel-input"
+                value={node.kind.prompt ?? ""}
+                onChange={(e) =>
+                  onChange({
+                    ...node,
+                    kind: { ...node.kind, prompt: e.target.value || undefined },
+                  })
+                }
+              >
+                <option value="">(Default system prompt)</option>
+                {availablePrompts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id} ({p.file})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label className="muted">Tools</label>
+              <div className="checkbox-list">
+                {availableTools.length === 0 && <div className="muted small">No tools defined.</div>}
+                {availableTools.map((tool) => (
+                  <label key={tool.id} className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={(node.kind.tools ?? []).includes(tool.id)}
+                      onChange={() => toggleTool(tool.id)}
+                    />
+                    <span>{tool.id}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
         );
       case "decision":
         return (
           <div className="stack">
-            <label className="muted">Prompt</label>
-            <input
-              className="panel-input"
-              value={node.kind.prompt ?? ""}
-              onChange={(e) => onChange({ ...node, kind: { ...node.kind, prompt: e.target.value } })}
-              placeholder="prompt id"
-            />
-            <label className="muted">Strategy</label>
-            <select
-              className="panel-input"
-              value={node.kind.strategy ?? "llm"}
-              onChange={(e) =>
-                onChange({
-                  ...node,
-                  kind: { ...node.kind, strategy: e.target.value as DecisionStrategy },
-                })
-              }
-            >
-              <option value="llm">llm</option>
-              <option value="rule">rule</option>
-            </select>
+            <div className="form-group">
+              <label className="muted">Prompt</label>
+              <select
+                className="panel-input"
+                value={node.kind.prompt ?? ""}
+                onChange={(e) =>
+                  onChange({
+                    ...node,
+                    kind: { ...node.kind, prompt: e.target.value || undefined },
+                  })
+                }
+              >
+                <option value="">Select a prompt...</option>
+                {availablePrompts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="muted">Strategy</label>
+              <select
+                className="panel-input"
+                value={node.kind.strategy ?? "llm"}
+                onChange={(e) =>
+                  onChange({
+                    ...node,
+                    kind: { ...node.kind, strategy: e.target.value as DecisionStrategy },
+                  })
+                }
+              >
+                <option value="llm">LLM (Model decides)</option>
+                <option value="rule">Rule-based (Conditions)</option>
+              </select>
+            </div>
           </div>
         );
       case "tool":
         return (
-          <div className="stack">
-            <label className="muted">Tool id</label>
-            <input
+          <div className="form-group">
+            <label className="muted">Tool</label>
+            <select
               className="panel-input"
               value={node.kind.tool}
               onChange={(e) => onChange({ ...node, kind: { ...node.kind, tool: e.target.value } })}
-              placeholder="search_tool"
-            />
+            >
+              <option value="" disabled>
+                Select a tool
+              </option>
+              {availableTools.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.id}
+                </option>
+              ))}
+            </select>
           </div>
         );
       case "loop":
         return (
           <div className="stack">
-            <label className="muted">Max iterations</label>
-            <input
-              className="panel-input"
-              type="number"
-              value={node.kind.max_iterations ?? ""}
-              onChange={(e) =>
-                onChange({
-                  ...node,
-                  kind: { ...node.kind, max_iterations: e.target.value === "" ? undefined : Number(e.target.value) },
-                })
-              }
-            />
-            <label className="muted">Condition</label>
-            <input
-              className="panel-input"
-              value={node.kind.condition ?? ""}
-              onChange={(e) => onChange({ ...node, kind: { ...node.kind, condition: e.target.value } })}
-              placeholder="e.g. retry < 3"
-            />
+            <div className="form-group">
+              <label className="muted">Max Iterations</label>
+              <input
+                className="panel-input"
+                type="number"
+                value={node.kind.max_iterations ?? ""}
+                onChange={(e) =>
+                  onChange({
+                    ...node,
+                    kind: {
+                      ...node.kind,
+                      max_iterations: e.target.value === "" ? undefined : Number(e.target.value),
+                    },
+                  })
+                }
+                placeholder="e.g. 3"
+              />
+            </div>
+            <div className="form-group">
+              <label className="muted">Break Condition</label>
+              <input
+                className="panel-input"
+                value={node.kind.condition ?? ""}
+                onChange={(e) =>
+                  onChange({
+                    ...node,
+                    kind: { ...node.kind, condition: e.target.value },
+                  })
+                }
+                placeholder="e.g. retry_count < 3"
+              />
+            </div>
           </div>
         );
       case "parallel":
         return (
-          <label className="muted" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <label className="checkbox-label" style={{ marginTop: 8 }}>
             <input
               type="checkbox"
               checked={node.kind.converge ?? false}
               onChange={(e) => onChange({ ...node, kind: { ...node.kind, converge: e.target.checked } })}
-              style={{ width: "auto" }}
             />
-            Converge before continuing
+            <span>Wait for all branches (converge)</span>
           </label>
         );
       case "subflow":
         return (
-          <div className="stack">
-            <label className="muted">Flow id</label>
-            <input
+          <div className="form-group">
+            <label className="muted">Sub-flow</label>
+            <select
               className="panel-input"
               value={node.kind.flow}
               onChange={(e) => onChange({ ...node, kind: { ...node.kind, flow: e.target.value } })}
-              placeholder="child flow id"
-            />
+            >
+              <option value="" disabled>
+                Select a flow
+              </option>
+              {availableFlows
+                .filter((f) => f.id !== availableFlows.find((af) => af.nodes.some((n) => n.base.id === base.id))?.id) // Simple cycle prevention check (imperfect but helpful)
+                .map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.id}
+                  </option>
+                ))}
+            </select>
           </div>
         );
       default:
@@ -165,68 +250,80 @@ const NodeEditor: React.FC<NodeEditorProps> = ({ node, onChange, onDelete }) => 
 
   return (
     <div className="stack">
-      <label className="muted">Node id</label>
-      <input
-        className="panel-input"
-        value={base.id}
-        onChange={(e) => onChange({ ...node, base: { ...base, id: e.target.value } })}
-      />
-      <label className="muted">Name</label>
-      <input
-        className="panel-input"
-        value={base.name ?? ""}
-        onChange={(e) => onChange({ ...node, base: { ...base, name: e.target.value } })}
-        placeholder="display label"
-      />
-      <label className="muted">Description</label>
-      <input
-        className="panel-input"
-        value={base.description ?? ""}
-        onChange={(e) => onChange({ ...node, base: { ...base, description: e.target.value } })}
-        placeholder="optional"
-      />
-      <label className="muted">Inputs (one per line)</label>
-      <textarea
-        className="panel-input"
-        value={(base.inputs ?? []).map((i) => i.from).join("\n")}
-        onChange={(e) => setInputs(e.target.value)}
-        placeholder="node/output"
-      />
+      <div className="form-group">
+        <label className="muted">Node ID</label>
+        <input
+          className="panel-input"
+          value={base.id}
+          onChange={(e) => onChange({ ...node, base: { ...base, id: e.target.value } })}
+        />
+      </div>
 
-      <div className="muted" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        Outputs
-        <button className="ghost" onClick={addOutput}>
-          +
+      <div className="form-group">
+        <label className="muted">Name</label>
+        <input
+          className="panel-input"
+          value={base.name ?? ""}
+          onChange={(e) => onChange({ ...node, base: { ...base, name: e.target.value } })}
+          placeholder="Display Label"
+        />
+      </div>
+
+      <div className="form-group">
+        <label className="muted">Description</label>
+        <textarea
+          className="panel-input"
+          value={base.description ?? ""}
+          onChange={(e) => onChange({ ...node, base: { ...base, description: e.target.value } })}
+          placeholder="What does this node do?"
+          style={{ minHeight: 60 }}
+        />
+      </div>
+
+      <div className="divider" style={{ width: "100%", height: 1, margin: "8px 0" }} />
+
+      <div className="section-title muted">Configuration</div>
+      {renderKindFields()}
+
+      <div className="divider" style={{ width: "100%", height: 1, margin: "8px 0" }} />
+
+      <div className="section-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span className="muted">Outputs</span>
+        <button className="ghost small" onClick={addOutput}>
+          + Add
         </button>
       </div>
+      
       <div className="stack">
         {outputsValue.map((out, idx) => (
-          <div className="edge-row" key={`${out.label}-${idx}`}>
-            <input
-              className="panel-input"
-              value={out.label}
-              onChange={(e) => updateOutput(idx, { label: e.target.value })}
-              placeholder="label"
-            />
-            <input
-              className="panel-input"
-              value={out.condition ?? ""}
-              onChange={(e) => updateOutput(idx, { condition: e.target.value })}
-              placeholder="condition"
-            />
-            <button className="ghost" onClick={() => removeOutput(idx)}>
+          <div className="edge-row" key={`${idx}`} style={{ alignItems: "start" }}>
+            <div className="stack" style={{ flex: 1, gap: 4 }}>
+              <input
+                className="panel-input small"
+                value={out.label}
+                onChange={(e) => updateOutput(idx, { label: e.target.value })}
+                placeholder="Output label"
+              />
+              <input
+                className="panel-input small"
+                value={out.condition ?? ""}
+                onChange={(e) => updateOutput(idx, { condition: e.target.value })}
+                placeholder="Condition (optional)"
+              />
+            </div>
+            <button className="ghost small" onClick={() => removeOutput(idx)} title="Remove output">
               ×
             </button>
           </div>
         ))}
-        {outputsValue.length === 0 && <div className="muted">No outputs defined.</div>}
+        {outputsValue.length === 0 && <div className="muted small">No explicit outputs.</div>}
       </div>
 
-      {renderKindFields()}
-
-      <button className="ghost" onClick={onDelete}>
-        Delete node
-      </button>
+      <div style={{ marginTop: 24 }}>
+        <button className="ghost danger" onClick={onDelete} style={{ width: "100%", borderColor: "rgba(255, 80, 80, 0.3)", color: "#ff6b6b" }}>
+          Delete Node
+        </button>
+      </div>
     </div>
   );
 };

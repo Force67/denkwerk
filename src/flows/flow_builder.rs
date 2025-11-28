@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fmt;
 
+use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -445,7 +446,7 @@ impl FlowRunner {
 /// Result of a flow execution
 ///
 /// Contains the output, events, transcript, and metrics from the flow execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FlowResult {
     /// Final output from the flow
     pub final_output: Option<String>,

@@ -11,11 +11,7 @@ export interface FlowExecutionResult {
   events: any[];
   transcript: any[];
   tool_results: any[];
-  metrics?: {
-    token_usage?: number;
-    execution_time?: number;
-    steps?: number;
-  };
+  metrics?: any;
 }
 
 export interface ValidationError {
@@ -127,10 +123,22 @@ class ApiClient {
     input: string,
     context?: Record<string, any>
   ): Promise<ApiResponse<FlowExecutionResult>> {
+    // Map frontend FlowDocument to backend expected format (flattened nodes)
+    const backendFlow = {
+      ...flow,
+      flows: flow.flows.map(f => ({
+        ...f,
+        nodes: f.nodes.map(n => ({
+          ...n.base,
+          ...n.kind,
+        }))
+      }))
+    };
+
     return this.request('/flows/execute', {
       method: 'POST',
       body: JSON.stringify({
-        flow,
+        flow: backendFlow,
         input,
         context,
       }),
@@ -267,7 +275,7 @@ class ApiClient {
 export const apiClient = new ApiClient(
   process.env.NODE_ENV === 'production'
     ? 'https://api.denkwerk.com'
-    : 'http://localhost:3000'
+    : 'http://localhost:3002/api'
 );
 
 // Hook for using API client in React components
