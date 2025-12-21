@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Flow '{flow}' contains no agent steps.");
             std::process::exit(1);
         }
-        Err(other) => return Err(Box::new(other)),
+        Err(other) => return Err(Box::new(other) as Box<dyn std::error::Error>),
     };
 
     if let Some(uuid) = tool_runs.iter().find_map(|run| {

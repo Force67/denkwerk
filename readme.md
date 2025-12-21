@@ -46,6 +46,20 @@ async fn main() -> anyhow::Result<()> {
 
 Each orchestration is just a thin layer on the provider trait. They add routing logic and event hooks but stay out of the model’s way.
 
+### How flows work (technical)
+
+- **Common shape**: An orchestrator holds an `Arc<dyn LLMProvider>`, a model name, and one or more `Agent`s. Runs build a transcript (`Vec<ChatMessage>`) and repeatedly call `provider.complete(...)` through the active agent.
+- **Agents + tools**: `Agent::execute_with_tools` prepends the agent’s system instructions, attaches tool definitions (if any), and returns both assistant text and tool calls.
+- **Structured outcomes**: Some flows interpret the assistant output as an action (respond / route / finish) and emit events as the transcript evolves.
+
+Flow types (current implementations):
+
+- **Sequential** (`SequentialOrchestrator`): runs agents in order; each agent sees the growing transcript and produces the next message.
+- **Concurrent** (`ConcurrentOrchestrator`): fans out to multiple agents in parallel and aggregates the results.
+- **Handoff** (`HandoffOrchestrator`): keeps a single active agent and switches to another agent when it detects a handoff action (via tool call, JSON-in-text, natural-language cue, or deterministic rule match).
+- **Group chat** (`GroupChatOrchestrator`): multi-agent conversation with a moderator/selector deciding who speaks next.
+- **Magentic** (`MagenticOrchestrator`): planner/executor style orchestration (plan, then run steps) using agents and tools.
+
 ### Sequential pipeline
 
 ```rust
@@ -70,6 +84,14 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+### Handoff: forcing tool-based handoffs
+
+By default, the handoff flow accepts handoff directives from either tool calling or parsed assistant text. If you want to *only* accept model-initiated handoffs via the internal `handoff` function call (deterministic rules can still route):
+
+```rust
+let orchestrator = HandoffOrchestrator::new(provider, "openai/gpt-4o-mini")
+    .with_force_handoff_tool(true);
+```
 
 ## License
 

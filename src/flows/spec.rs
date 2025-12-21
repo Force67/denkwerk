@@ -102,7 +102,287 @@ pub struct PromptDefinition {
     pub description: Option<String>,
 }
 
-// ...
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RetryPolicy {
+    pub max: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CallSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<RetryPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionStrategy {
+    Rule,
+    Llm,
+}
+
+impl std::fmt::Display for DecisionStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecisionStrategy::Rule => write!(f, "rule"),
+            DecisionStrategy::Llm => write!(f, "llm"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NodeLayout {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NodeInput {
+    pub from: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NodeOutput {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NodeBase {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<NodeInput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<NodeOutput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<NodeLayout>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FlowNodeKind {
+    Input {},
+    Output {},
+    Agent {
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parameters: Option<CallSettings>,
+    },
+    Decision {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strategy: Option<DecisionStrategy>,
+    },
+    Tool {
+        tool: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arguments: Option<Value>,
+    },
+    Merge {},
+    Parallel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        converge: Option<bool>,
+    },
+    Loop {
+        #[serde(default = "default_loop_iterations")]
+        max_iterations: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        condition: Option<String>,
+    },
+    Subflow {
+        flow: String,
+    },
+}
+
+fn default_loop_iterations() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FlowNode {
+    #[serde(flatten)]
+    pub base: NodeBase,
+    #[serde(flatten)]
+    pub kind: FlowNodeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FlowEdge {
+    pub from: String,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GroupChatOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_rounds: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_prompt_frequency: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HandoffAlias {
+    pub alias: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub enum HandoffMatcherDefinition {
+    #[serde(rename = "keywords_any")]
+    KeywordsAny,
+    #[serde(rename = "keywords_all")]
+    KeywordsAll,
+    #[serde(rename = "regex")]
+    Regex,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HandoffRuleDefinition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub matcher: HandoffMatcherDefinition,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HandoffOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_handoffs: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<HandoffAlias>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<HandoffRuleDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FlowDefinition {
+    pub id: String,
+    pub entry: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<FlowNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<FlowEdge>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_chat: Option<GroupChatOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<HandoffOptions>,
+}
+
+#[derive(Debug, Error)]
+pub enum FlowLoadError {
+    #[error("failed to parse flow YAML: {0}")]
+    Parse(#[from] serde_yaml::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("flow not found: {0}")]
+    FlowNotFound(String),
+    #[error("node not found: {0}")]
+    NodeNotFound(String),
+    #[error("agent not found: {0}")]
+    AgentNotFound(String),
+    #[error("missing output node in flow: {0}")]
+    MissingOutput(String),
+    #[error("missing parallel branches for node: {0}")]
+    MissingParallelBranches(String),
+    #[error("invalid parallel convergence at node: {0}")]
+    ParallelConvergence(String),
+    #[error("unsupported node kind at node: {0}")]
+    UnsupportedNode(String),
+    #[error("subflow cycle detected at flow: {0}")]
+    SubflowCycle(String),
+    #[error("no matching edge from node: {0}")]
+    NoMatchingEdge(String),
+    #[error("tool resolution failed for {0}: {1}")]
+    ToolResolution(String, String),
+    #[error("function not found for tool {0}: {1}")]
+    FunctionNotFound(String, String),
+    #[error("invalid regex {0}: {1}")]
+    InvalidRegex(String, String),
+}
+
+#[derive(Debug, Error)]
+pub enum ToolExecutionError {
+    #[error("tool registry missing: {0}")]
+    RegistryMissing(String),
+    #[error("tool arguments must be a JSON object for: {0}")]
+    InvalidArguments(String),
+    #[error("tool invocation failed for {0}: {1}")]
+    InvocationFailed(String, String),
+}
+
+#[derive(Debug, Error)]
+pub enum FlowRunError {
+    #[error(transparent)]
+    Load(#[from] FlowLoadError),
+    #[error(transparent)]
+    Tool(#[from] ToolExecutionError),
+    #[error(transparent)]
+    Agent(#[from] AgentError),
+    #[error("no agents in flow: {0}")]
+    NoAgents(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct FlowBuilder {
+    base_dir: PathBuf,
+    document: FlowDocument,
+}
+
+impl FlowBuilder {
+    pub fn from_yaml_str(base_dir: impl AsRef<Path>, input: &str) -> Result<Self, FlowLoadError> {
+        let document: FlowDocument = serde_yaml::from_str(input)?;
+        Ok(Self {
+            base_dir: base_dir.as_ref().to_path_buf(),
+            document,
+        })
+    }
+
+    pub fn document(&self) -> &FlowDocument {
+        &self.document
+    }
+
+    fn flow(&self, flow_id: &str) -> Result<&FlowDefinition, FlowLoadError> {
+        self.document
+            .flows
+            .iter()
+            .find(|f| f.id == flow_id)
+            .ok_or_else(|| FlowLoadError::FlowNotFound(flow_id.to_string()))
+    }
 
     pub fn build_agents(
         &self,
@@ -337,8 +617,18 @@ pub struct PromptDefinition {
         for tool in &self.document.tools {
             if tool.function.is_none() && tool.kind == "http" {
                 if let Some(spec_path) = &tool.spec {
+                    let mut already_provided = resolved_functions.contains_key(&tool.id)
+                        || resolved_functions.contains_key(spec_path)
+                        || resolved_functions.contains_key(&format!("http:{spec_path}"));
+
+                    if let Some(abs) = self.base_dir.join(spec_path).to_str() {
+                        already_provided = already_provided
+                            || resolved_functions.contains_key(abs)
+                            || resolved_functions.contains_key(&format!("http:{abs}"));
+                    }
+
                     // Only load if not already provided
-                    if !resolved_functions.contains_key(&tool.id) {
+                    if !already_provided {
                         match load_http_function(&self.base_dir, spec_path, &tool.id) {
                             Ok(func) => {
                                 resolved_functions.insert(tool.id.clone(), func.clone());
@@ -839,6 +1129,8 @@ pub struct PromptDefinition {
         Ok(ids)
     }
 
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct FlowContext {
     pub vars: HashMap<String, serde_json::Value>,
@@ -1079,7 +1371,7 @@ fn apply_call_settings(agent: Agent, settings: Option<&CallSettings>) -> Agent {
 }
 
 fn handoff_rule_from_definition(def: &HandoffRuleDefinition) -> Result<HandoffRule, FlowLoadError> {
-    let matcher = handoff_matcher_from_definition(&def.matcher)?;
+    let matcher = handoff_matcher_from_definition(def)?;
     let directive = HandoffDirective {
         target: def.target.clone(),
         message: def.message.clone(),
@@ -1092,13 +1384,14 @@ fn handoff_rule_from_definition(def: &HandoffRuleDefinition) -> Result<HandoffRu
     })
 }
 
-fn handoff_matcher_from_definition(def: &HandoffMatcherDefinition) -> Result<HandoffMatcher, FlowLoadError> {
-    match def {
-        HandoffMatcherDefinition::KeywordsAny { keywords } => Ok(HandoffMatcher::KeywordsAny(keywords.clone())),
-        HandoffMatcherDefinition::KeywordsAll { keywords } => Ok(HandoffMatcher::KeywordsAll(keywords.clone())),
-        HandoffMatcherDefinition::Regex { pattern } => {
-            let regex = regex::Regex::new(pattern)
-                .map_err(|err| FlowLoadError::InvalidRegex(pattern.clone(), err.to_string()))?;
+fn handoff_matcher_from_definition(def: &HandoffRuleDefinition) -> Result<HandoffMatcher, FlowLoadError> {
+    match def.matcher {
+        HandoffMatcherDefinition::KeywordsAny => Ok(HandoffMatcher::KeywordsAny(def.keywords.clone())),
+        HandoffMatcherDefinition::KeywordsAll => Ok(HandoffMatcher::KeywordsAll(def.keywords.clone())),
+        HandoffMatcherDefinition::Regex => {
+            let pattern = def.pattern.clone().unwrap_or_default();
+            let regex = regex::Regex::new(&pattern)
+                .map_err(|err| FlowLoadError::InvalidRegex(pattern, err.to_string()))?;
             Ok(HandoffMatcher::Regex(regex))
         }
     }
@@ -1255,7 +1548,8 @@ flows:
             doc.prompts,
             vec![PromptDefinition {
                 id: "analysis_prompt".to_string(),
-                file: "prompts/analysis.txt".to_string(),
+                file: Some("prompts/analysis.txt".to_string()),
+                text: None,
                 description: Some("Main analysis prompt".to_string()),
             }]
         );

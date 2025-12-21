@@ -315,6 +315,7 @@ pub(crate) struct AgentTurn {
     pub(crate) action: AgentAction,
     pub(crate) tool_calls: Vec<crate::functions::ToolCall>,
     pub(crate) usage: Option<TokenUsage>,
+    pub(crate) raw_content: String,
 }
 
 #[derive(Debug, Clone)]
@@ -333,6 +334,7 @@ pub struct HandoffOrchestrator {
     max_handoffs: Option<usize>,
     max_rounds: usize,
     llm_timeout_ms: u64,
+    force_handoff_tool: bool,
     event_callback: Option<Arc<dyn Fn(&HandoffEvent) + Send + Sync>>,
     shared_state: Option<Arc<dyn SharedStateContext>>,
     metrics_collector: Option<Arc<dyn MetricsCollector>>,
@@ -349,6 +351,7 @@ impl HandoffOrchestrator {
             max_handoffs: Some(4),
             max_rounds: 32,
             llm_timeout_ms: 60_000,
+            force_handoff_tool: false,
             event_callback: None,
             shared_state: None,
             metrics_collector: None,
@@ -475,6 +478,13 @@ Just respond naturally - the system handles the handoffs automatically based on 
 
     pub fn with_llm_timeout_ms(mut self, ms: u64) -> Self {
         self.llm_timeout_ms = ms;
+        self
+    }
+
+    /// When enabled, ignore text/JSON-based handoff directives and only accept handoffs via the
+    /// internal `handoff` tool call (rules can still trigger handoffs).
+    pub fn with_force_handoff_tool(mut self, enabled: bool) -> Self {
+        self.force_handoff_tool = enabled;
         self
     }
 
@@ -704,6 +714,14 @@ impl<'a> HandoffSession<'a> {
 
             // Check if handoff tool was called
             let handoff_tool_called = turn.tool_calls.iter().any(|tc| tc.function.name == "handoff");
+
+            // If forcing tool-based handoffs, ignore parser-derived handoffs.
+            if self.orchestrator.force_handoff_tool && matches!(action, AgentAction::HandOff { .. }) && !handoff_tool_called {
+                action = AgentAction::Respond {
+                    message: turn.raw_content.clone(),
+                };
+                handoff_source = DecisionSource::Parser;
+            }
 
             // If action is Respond, run deterministic rules.
             if let AgentAction::Respond { ref message } = action {
