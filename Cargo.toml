@@ -26,6 +26,7 @@ strsim = "0.10"
 clap = { version = "4.0", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde_yaml = "0.9"
+jsonschema = "0.17"
 iced = { version = "0.12", features = ["canvas", "tokio"] }
 iced_futures = "0.12"
 libloading = "0.8"

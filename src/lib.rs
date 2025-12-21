@@ -7,6 +7,7 @@
  pub mod plugins;
  pub mod history;
  pub mod eval;
+ pub mod bench;
  pub mod shared_state;
  pub mod metrics;
 

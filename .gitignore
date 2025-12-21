@@ -8,3 +8,6 @@
 /frontend/.vite
 /frontend/bun.lockb
 examples/prompt_from_yaml_demo/.env
+AGENTS.md
+CLAUDE.md
+/bench
