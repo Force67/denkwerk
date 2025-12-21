@@ -215,6 +215,17 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
         self.manager.on_start(&self.agents);
 
         loop {
+            if let Some(limit) = self.manager.max_rounds() {
+                if rounds >= limit {
+                    let event = GroupChatEvent::Terminated {
+                        reason: format!("maximum rounds {limit} reached"),
+                    };
+                    self.emit_event(&event);
+                    events.push(event);
+                    break;
+                }
+            }
+
             if self.manager.should_request_user_input(rounds, &transcript) {
                 let callback = self
                     .user_input_callback
@@ -237,17 +248,6 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
                 self.emit_event(&event);
                 events.push(event);
                 break;
-            }
-
-            if let Some(limit) = self.manager.max_rounds() {
-                if rounds >= limit {
-                    let event = GroupChatEvent::Terminated {
-                        reason: format!("maximum rounds {limit} reached"),
-                    };
-                    self.emit_event(&event);
-                    events.push(event);
-                    break;
-                }
             }
 
             let next = self

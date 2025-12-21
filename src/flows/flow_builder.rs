@@ -24,22 +24,23 @@ use crate::LLMProvider;
 /// # Examples
 ///
 /// ## Basic usage with YAML file
-/// ```rust
+/// ```rust,no_run
 /// use denkwerk::Flow;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let result = Flow::from_file("flow.yaml")
+///     let result = Flow::from_file("flow.yaml")?
 ///         .with_env_file(".env")
-///         .run("Summarize why Rust is great for backend services")?;
+///         .run("Summarize why Rust is great for backend services")
+///         .await?;
 ///
-///     println!("Result: {}", result);
+///     println!("Result: {}", result.output());
 ///     Ok(())
 /// }
 /// ```
 ///
 /// ## With custom functions
-/// ```rust
+/// ```rust,no_run
 /// use denkwerk::{Flow, kernel_function};
 ///
 /// #[kernel_function(name = "calculate", description = "Perform calculations")]
@@ -47,10 +48,16 @@ use crate::LLMProvider;
 ///     Ok(a + b)
 /// }
 ///
-/// let result = Flow::from_file("flow.yaml")
-///     .with_function(calculate())
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let result = Flow::from_file("flow.yaml")?
+///     .with_function(calculate_kernel())
 ///     .with_context_var("mode", "detailed")
-///     .run("Analyze the data")?;
+///     .run("Analyze the data")
+///     .await?;
+///     println!("Result: {}", result.output());
+///     Ok(())
+/// }
 /// ```
 pub struct Flow {
     builder: SpecFlowBuilder,
@@ -81,8 +88,13 @@ impl Flow {
     /// * `path` - Path to the YAML flow file
     ///
     /// # Examples
-    /// ```
-    /// let flow = Flow::from_file("my_flow.yaml")?;
+    /// ```rust,no_run
+    /// use denkwerk::Flow;
+    ///
+    /// fn main() -> Result<(), denkwerk::FlowError> {
+    ///     let _flow = Flow::from_file("my_flow.yaml")?;
+    ///     Ok(())
+    /// }
     /// ```
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, FlowError> {
         let path = path.as_ref();
@@ -125,8 +137,13 @@ impl Flow {
     /// * `dir` - Directory containing the flow definition
     ///
     /// # Examples
-    /// ```
-    /// let flow = Flow::from_directory("my_flow_directory")?;
+    /// ```rust,no_run
+    /// use denkwerk::Flow;
+    ///
+    /// fn main() -> Result<(), denkwerk::FlowError> {
+    ///     let _flow = Flow::from_directory("my_flow_directory")?;
+    ///     Ok(())
+    /// }
     /// ```
     pub fn from_directory<P: AsRef<Path>>(dir: P) -> Result<Self, FlowError> {
         let dir = dir.as_ref();
@@ -152,10 +169,15 @@ impl Flow {
     /// * `path` - Path to the .env file
     ///
     /// # Examples
-    /// ```
-    /// let flow = Flow::from_file("flow.yaml")
-    ///     .with_env_file(".env")
-    ///     .with_env_file(".env.production");
+    /// ```rust,no_run
+    /// use denkwerk::Flow;
+    ///
+    /// fn main() -> Result<(), denkwerk::FlowError> {
+    ///     let _flow = Flow::from_file("flow.yaml")?
+    ///         .with_env_file(".env")
+    ///         .with_env_file(".env.production");
+    ///     Ok(())
+    /// }
     /// ```
     pub fn with_env_file<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.env_files.push(path.as_ref().to_path_buf());
@@ -168,7 +190,8 @@ impl Flow {
     /// * `function` - Function implementing KernelFunction trait
     ///
     /// # Examples
-    /// ```
+    /// ```rust,no_run
+    /// use denkwerk::Flow;
     /// use denkwerk::kernel_function;
     ///
     /// #[kernel_function(name = "math_add", description = "Add two numbers")]
@@ -176,8 +199,11 @@ impl Flow {
     ///     Ok(a + b)
     /// }
     ///
-    /// let flow = Flow::from_file("flow.yaml")
-    ///     .with_function(math_add());
+    /// fn main() -> Result<(), denkwerk::FlowError> {
+    ///     let _flow = Flow::from_file("flow.yaml")?
+    ///         .with_function(math_add_kernel());
+    ///     Ok(())
+    /// }
     /// ```
     pub fn with_function(mut self, function: Arc<dyn KernelFunction>) -> Self {
         let name = function.definition().name.clone();
@@ -192,10 +218,15 @@ impl Flow {
     /// * `value` - Variable value
     ///
     /// # Examples
-    /// ```
-    /// let flow = Flow::from_file("flow.yaml")
-    ///     .with_context_var("mode", "detailed")
-    ///     .with_context_var("user_id", "12345");
+    /// ```rust,no_run
+    /// use denkwerk::Flow;
+    ///
+    /// fn main() -> Result<(), denkwerk::FlowError> {
+    ///     let _flow = Flow::from_file("flow.yaml")?
+    ///         .with_context_var("mode", "detailed")
+    ///         .with_context_var("user_id", "12345");
+    ///     Ok(())
+    /// }
     /// ```
     pub fn with_context_var<K: Into<String>, V: Into<Value>>(mut self, key: K, value: V) -> Self {
         self.context = self.context.with_var(key.into(), value.into());
@@ -221,9 +252,14 @@ impl Flow {
     /// - All tool specifications referenced in the flow
     ///
     /// # Examples
-    /// ```
-    /// let flow = Flow::from_file("flow.yaml")
-    ///     .with_auto_discovery(true);
+    /// ```rust,no_run
+    /// use denkwerk::Flow;
+    ///
+    /// fn main() -> Result<(), denkwerk::FlowError> {
+    ///     let _flow = Flow::from_file("flow.yaml")?
+    ///         .with_auto_discovery(true);
+    ///     Ok(())
+    /// }
     /// ```
     pub fn with_auto_discovery(mut self, enabled: bool) -> Self {
         self.auto_discover = enabled;
@@ -236,13 +272,17 @@ impl Flow {
     /// * `provider` - LLM provider implementation wrapped in Arc
     ///
     /// # Examples
-    /// ```
-    /// use denkwerk::{Flow, providers::openai::OpenAI};
+    /// ```rust,no_run
+    /// use denkwerk::{Flow, LLMProvider};
+    /// use denkwerk::providers::openrouter::OpenRouter;
     /// use std::sync::Arc;
     ///
-    /// let provider = Arc::new(OpenAI::new("your-api-key")?);
-    /// let flow = Flow::from_file("flow.yaml")
-    ///     .with_provider(provider);
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let provider: Arc<dyn LLMProvider> = Arc::new(OpenRouter::from_env()?);
+    ///     let _runner = Flow::from_file("flow.yaml")?
+    ///         .with_provider(provider);
+    ///     Ok(())
+    /// }
     /// ```
     pub fn with_provider(self, provider: Arc<dyn LLMProvider>) -> FlowRunner {
         FlowRunner {
@@ -260,9 +300,17 @@ impl Flow {
     /// * `task` - The task/question to process
     ///
     /// # Examples
-    /// ```
-    /// let result = Flow::from_file("flow.yaml")
-    ///     .run("Process this data")?;
+    /// ```rust,no_run
+    /// use denkwerk::Flow;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let result = Flow::from_file("flow.yaml")?
+    ///         .run("Process this data")
+    ///         .await?;
+    ///     println!("{}", result.output());
+    ///     Ok(())
+    /// }
     /// ```
     pub async fn run<S: Into<String>>(self, task: S) -> Result<FlowResult, FlowError> {
         self.load_environment()?;
@@ -376,13 +424,21 @@ impl FlowRunner {
     /// `FlowResult` containing the execution results
     ///
     /// # Examples
-    /// ```
-    /// use denkwerk::{Flow, providers::openai::OpenAI};
+    /// ```rust,no_run
+    /// use denkwerk::{Flow, LLMProvider};
+    /// use denkwerk::providers::openrouter::OpenRouter;
+    /// use std::sync::Arc;
     ///
-    /// let provider = OpenAI::new("api-key")?;
-    /// let result = Flow::from_file("flow.yaml")
-    ///     .with_provider(provider)
-    ///     .run("Process this task")?;
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let provider: Arc<dyn LLMProvider> = Arc::new(OpenRouter::from_env()?);
+    ///     let result = Flow::from_file("flow.yaml")?
+    ///         .with_provider(provider)
+    ///         .run("Process this task")
+    ///         .await?;
+    ///     println!("{}", result.output());
+    ///     Ok(())
+    /// }
     /// ```
     pub async fn run<S: Into<String>>(self, task: S) -> Result<FlowResult, FlowError> {
         self.run_with_callback(task, |_event| {}).await
@@ -395,11 +451,23 @@ impl FlowRunner {
     /// * `callback` - Function to call for each flow event
     ///
     /// # Examples
-    /// ```
-    /// let result = flow.with_provider(provider)
-    ///     .run_with_callback("Process task", |event| {
-    ///         println!("Event: {:?}", event);
-    ///     })?;
+    /// ```rust,no_run
+    /// use denkwerk::{Flow, LLMProvider};
+    /// use denkwerk::providers::openrouter::OpenRouter;
+    /// use std::sync::Arc;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let provider: Arc<dyn LLMProvider> = Arc::new(OpenRouter::from_env()?);
+    ///     let result = Flow::from_file("flow.yaml")?
+    ///         .with_provider(provider)
+    ///         .run_with_callback("Process task", |event| {
+    ///             println!("Event: {:?}", event);
+    ///         })
+    ///         .await?;
+    ///     println!("{}", result.output());
+    ///     Ok(())
+    /// }
     /// ```
     pub async fn run_with_callback<F, S>(
         self,

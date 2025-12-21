@@ -242,10 +242,14 @@ impl Agent {
             AgentAction::from_response(content)
         };
 
-        Ok(AgentTurn { action, tool_calls, usage })
+        Ok(AgentTurn {
+            action,
+            tool_calls,
+            usage,
+            raw_content: content.to_string(),
+        })
     }
 }
-
 
 
 
