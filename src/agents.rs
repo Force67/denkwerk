@@ -200,8 +200,26 @@ impl Agent {
             request = request.with_top_p(top_p);
         }
 
-        // Use additional functions if provided, otherwise use agent's functions
-        let functions_to_use = additional_functions.or_else(|| self.functions.as_ref().map(|arc| arc.as_ref()));
+        // Merge internal/extra functions with agent functions when both exist.
+        // The merged registry must live long enough, so we store it in an Option outside the match.
+        let agent_functions = self.functions.as_ref().map(|arc| arc.as_ref());
+        let merged_storage = match (additional_functions, agent_functions) {
+            (Some(additional), Some(agent_funcs)) => {
+                let mut registry = FunctionRegistry::new();
+                registry.extend_from(agent_funcs);
+                registry.extend_from(additional);
+                Some(registry)
+            }
+            _ => None,
+        };
+        let functions_to_use: Option<&FunctionRegistry> = merged_storage
+            .as_ref()
+            .map(|r| r as &FunctionRegistry)
+            .or_else(|| match (additional_functions, agent_functions) {
+                (Some(additional), None) => Some(additional),
+                (None, Some(agent_funcs)) => Some(agent_funcs),
+                _ => None,
+            });
 
         if let Some(functions) = functions_to_use {
             request = request.with_function_registry(functions);
@@ -250,6 +268,3 @@ impl Agent {
         })
     }
 }
-
-
-
