@@ -186,7 +186,7 @@ impl Agent {
 
         let target_model = self.model_override.as_deref().unwrap_or(model);
 
-        let mut request = CompletionRequest::new(target_model.to_string(), messages);
+        let mut request = CompletionRequest::new(target_model.to_string(), messages.clone());
 
         if let Some(max_tokens) = self.max_tokens {
             request = request.with_max_tokens(max_tokens);
@@ -230,41 +230,85 @@ impl Agent {
             request = request.with_tool_choice(tool_choice.clone());
         }
 
-        let response = active_provider.complete(request).await?;
-        let content = response.message.text().unwrap_or_default();
-        let tool_calls = response.message.tool_calls.clone();
-        let usage = response.usage;
+        let max_tool_rounds = 2;
+        let mut all_tool_calls = Vec::new();
+        let mut last_usage = None;
+        let mut last_content = String::new();
+        let mut action_override: Option<AgentAction> = None;
 
-        let action = if !tool_calls.is_empty() {
-            // If there are tool calls, execute them and use the result
-            // For now, assume the first tool call result is the action
-            // This is a simplification; in practice, we might need to handle multiple calls
-            if let Some(tool_call) = tool_calls.first() {
-                if let Some(functions) = functions_to_use {
-                    if let Ok(result) = functions.invoke(&tool_call.function).await {
-                        if let Ok(action_envelope) = serde_json::from_value::<ActionEnvelope>(result) {
-                            action_envelope.into()
-                        } else {
-                            AgentAction::from_response(content)
-                        }
-                    } else {
-                        AgentAction::from_response(content)
-                    }
-                } else {
-                    AgentAction::from_response(content)
+        for round in 0..max_tool_rounds {
+            let response = active_provider.complete(request).await?;
+            let mut assistant_msg = response.message.clone();
+            last_usage = response.usage;
+
+            for (i, call) in assistant_msg.tool_calls.iter_mut().enumerate() {
+                if call.id.is_none() {
+                    call.id = Some(format!("tool_call_{round}_{i}"));
                 }
-            } else {
-                AgentAction::from_response(content)
             }
-        } else {
-            AgentAction::from_response(content)
-        };
+
+            last_content = assistant_msg.text().unwrap_or_default().to_string();
+            all_tool_calls.extend(assistant_msg.tool_calls.clone());
+            messages.push(assistant_msg.clone());
+
+            if assistant_msg.tool_calls.is_empty() {
+                break;
+            }
+
+            let Some(functions) = functions_to_use else {
+                break;
+            };
+
+            for call in assistant_msg.tool_calls {
+                let id = call.id.clone().unwrap_or_else(|| format!("tool_call_{round}_x"));
+                let tool_result = functions.invoke(&call.function).await;
+                let tool_value = match tool_result {
+                    Ok(value) => value,
+                    Err(err) => serde_json::json!({ "error": err.to_string() }),
+                };
+
+                if action_override.is_none() {
+                    if let Ok(action_envelope) = serde_json::from_value::<ActionEnvelope>(tool_value.clone()) {
+                        action_override = Some(action_envelope.into());
+                    }
+                }
+
+                let tool_content = serde_json::to_string(&tool_value)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to serialize tool result\"}".to_string());
+                messages.push(ChatMessage::tool(id, tool_content));
+            }
+
+            if action_override.is_some() {
+                break;
+            }
+
+            let mut next_request = CompletionRequest::new(target_model.to_string(), messages.clone());
+            if let Some(max_tokens) = self.max_tokens {
+                next_request = next_request.with_max_tokens(max_tokens);
+            }
+            if let Some(temperature) = self.temperature {
+                next_request = next_request.with_temperature(temperature);
+            }
+            if let Some(top_p) = self.top_p {
+                next_request = next_request.with_top_p(top_p);
+            }
+            if let Some(functions) = functions_to_use {
+                next_request = next_request.with_function_registry(functions);
+            }
+            if let Some(tool_choice) = &effective_tool_choice {
+                next_request = next_request.with_tool_choice(tool_choice.clone());
+            }
+
+            request = next_request;
+        }
+
+        let action = action_override.unwrap_or_else(|| AgentAction::from_response(&last_content));
 
         Ok(AgentTurn {
             action,
-            tool_calls,
-            usage,
-            raw_content: content.to_string(),
+            tool_calls: all_tool_calls,
+            usage: last_usage,
+            raw_content: last_content,
         })
     }
 }
