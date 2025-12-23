@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use meval::Expr;
+use evalexpr::{eval, Value};
 
 use crate::functions::{
     json_schema_for,
@@ -12,8 +12,13 @@ use crate::{kernel_function, Agent};
 
 #[kernel_function]
 async fn evaluate_expression(expression: String) -> Result<f64, String> {
-    let expr = expression.parse::<Expr>().map_err(|err| err.to_string())?;
-    expr.eval().map_err(|err| err.to_string())
+    let value = eval(&expression).map_err(|err| err.to_string())?;
+    match value {
+        Value::Int(v) => Ok(v as f64),
+        Value::Float(v) => Ok(v),
+        Value::Boolean(v) => Ok(if v { 1.0 } else { 0.0 }),
+        other => Err(format!("expression did not evaluate to a number: {other:?}")),
+    }
 }
 
 pub fn register_math_functions(registry: &mut FunctionRegistry) {

@@ -6,7 +6,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use meval;
+use evalexpr::{
+    eval_with_context, ContextWithMutableVariables, DefaultNumericTypes, HashMapContext,
+    Value as EvalValue,
+};
 
 use super::sequential::{SequentialEvent, SequentialOrchestrator, SequentialRun};
 use crate::flows::handoffflow::{HandoffDirective, HandoffMatcher, HandoffRule};
@@ -1257,16 +1260,24 @@ fn condition_matches(condition: Option<&str>, ctx: &FlowContext, iteration: Opti
                 return parsed;
             }
 
-            let mut vars = meval::Context::new();
+            let mut vars: HashMapContext<DefaultNumericTypes> = HashMapContext::new();
             if let Some(iter) = iteration {
-                vars.var("iteration", iter as f64);
+                let _ = vars.set_value("iteration".into(), EvalValue::Float(iter as f64));
             }
             for (k, v) in &ctx.vars {
                 if let Some(num) = v.as_f64() {
-                    vars.var(k, num);
+                    let _ = vars.set_value(k.clone(), EvalValue::Float(num));
                 }
             }
-            meval::eval_str_with_context(text, &vars).map(|v| v != 0.0).unwrap_or(false)
+            eval_with_context(text, &vars)
+                .map(|v| match v {
+                    EvalValue::Boolean(val) => val,
+                    EvalValue::Int(val) => val != 0_i64,
+                    EvalValue::Float(val) => val != 0.0_f64,
+                    EvalValue::String(val) => !val.is_empty(),
+                    _ => false,
+                })
+                .unwrap_or(false)
         }
     }
 }
