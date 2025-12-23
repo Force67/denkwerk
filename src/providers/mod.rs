@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::types::{
     CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
-    ImageUploadResponse, ProviderCapabilities, EmbeddingRequest, EmbeddingResponse,
+    ImageUploadResponse, ProviderCapabilities, EmbeddingRequest, EmbeddingResponse, ModelInfo,
 };
 use crate::LLMError;
 
@@ -38,6 +38,14 @@ pub trait LLMProvider: Send + Sync {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::default()
+    }
+
+    async fn model_info(&self, _id: &str) -> Result<ModelInfo, LLMError> {
+        Err(LLMError::Unsupported("model info"))
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, LLMError> {
+        Err(LLMError::Unsupported("model list"))
     }
 
     fn name(&self) -> &'static str;

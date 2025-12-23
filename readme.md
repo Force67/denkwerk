@@ -42,6 +42,34 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+## Model metadata
+
+Providers can expose model metadata so callers can query pricing and feature support before running a flow. The surface is intentionally minimal and provider-agnostic:
+
+- **Pricing**: prompt/completion rates as USD per token (matching the OpenRouter catalog units).
+- **Capabilities**: flags for reasoning, function calling, tool use, vision, streaming, and JSON schema support.
+- **Reasoning config** (if exposed by the provider): defaults/limits or supported effort levels.
+
+For OpenRouter, the implementation parses the OpenRouter model catalog and surfaces only these fields. The API includes a single-model lookup plus an optional list method for callers who want the full catalog in-memory. Pricing values mirror OpenRouter's catalog units (USD per token).
+
+```rust
+use denkwerk::providers::openrouter::OpenRouter;
+use denkwerk::LLMProvider;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let provider = OpenRouter::from_env()?;
+    let info = provider.model_info("openai/gpt-4o-mini").await?;
+    println!("{:?}", info.pricing);
+    Ok(())
+}
+```
+
+The HTTP server exposes the same metadata when an `Authorization: Bearer <token>` header is provided:
+
+- `GET /api/models` → list models (provider-specific, OpenRouter supported)
+- `GET /api/models/{id}` → single model lookup
+
 ## Orchestrations in practice
 
 Each orchestration is just a thin layer on the provider trait. They add routing logic and event hooks but stay out of the model’s way.

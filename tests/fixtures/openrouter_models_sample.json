@@ -1,0 +1,49 @@
+{
+  "data": [
+    {
+      "slug": "openai/gpt-4o-mini",
+      "name": "GPT-4o mini",
+      "created_at": "2024-07-18",
+      "updated_at": "2024-10-01",
+      "context_length": 128000,
+      "max_completion_tokens": 16384,
+      "input_modalities": ["text", "image"],
+      "output_modalities": ["text"],
+      "supported_parameters": ["tools", "tool_choice", "response_format", "stream"],
+      "supports_tool_parameters": true,
+      "supports_reasoning": true,
+      "pricing": {
+        "prompt": "0.00000015",
+        "completion": "0.00000060",
+        "request": "0.00000000"
+      },
+      "reasoning_config": {
+        "start_token": "<reasoning>",
+        "end_token": "</reasoning>",
+        "system_prompt": ""
+      },
+      "features": {
+        "reasoning_return_mechanism": "delimited",
+        "is_mandatory_reasoning": false,
+        "should_send_reasoning_text_in_text_content": false,
+        "supports_tool_choice": {
+          "type_function": true
+        }
+      }
+    },
+    {
+      "slug": "anthropic/claude-3-haiku",
+      "name": "Claude 3 Haiku",
+      "context_length": 200000,
+      "input_modalities": ["text"],
+      "output_modalities": ["text"],
+      "supported_parameters": ["tools"],
+      "supports_tool_parameters": true,
+      "supports_reasoning": false,
+      "pricing": {
+        "prompt": "0.00000025",
+        "completion": "0.00000125"
+      }
+    }
+  ]
+}

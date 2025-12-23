@@ -277,3 +277,52 @@ impl ProviderCapabilities {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelPricing {
+    pub prompt_per_token: Option<f64>,
+    pub completion_per_token: Option<f64>,
+    pub image_per_token: Option<f64>,
+    pub request_per_call: Option<f64>,
+    pub web_search_per_call: Option<f64>,
+    pub internal_reasoning_per_token: Option<f64>,
+    pub image_output_per_token: Option<f64>,
+    pub discount: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelCapabilities {
+    pub supports_reasoning: bool,
+    pub supports_function_calling: bool,
+    pub supports_tools: bool,
+    pub supports_tool_choice: bool,
+    pub supports_vision: bool,
+    pub supports_streaming: bool,
+    pub supports_json_schema: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReasoningConfig {
+    pub start_token: Option<String>,
+    pub end_token: Option<String>,
+    pub system_prompt: Option<String>,
+    pub return_mechanism: Option<String>,
+    pub is_mandatory_reasoning: Option<bool>,
+    pub should_send_reasoning_text_in_text_content: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub context_length: Option<u32>,
+    pub max_completion_tokens: Option<u32>,
+    pub input_modalities: Vec<String>,
+    pub output_modalities: Vec<String>,
+    pub pricing: ModelPricing,
+    pub capabilities: ModelCapabilities,
+    pub reasoning_config: Option<ReasoningConfig>,
+}
