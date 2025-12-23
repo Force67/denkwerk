@@ -2,7 +2,7 @@ use denkwerk::{
     kernel_function, Agent, FunctionRegistry, InMemorySharedStateStore,
     LLMProvider, SequentialOrchestrator, SharedStateContextExt, SharedStateContext,
 };
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -39,25 +39,14 @@ impl LLMProvider for MockProvider {
 }
 
 // Global shared state reference for functions
-static mut SHARED_STATE: Option<Arc<InMemorySharedStateStore>> = None;
+static SHARED_STATE: OnceLock<Arc<InMemorySharedStateStore>> = OnceLock::new();
 
 fn set_shared_state_reference(state: Arc<InMemorySharedStateStore>) {
-    unsafe {
-        SHARED_STATE = Some(state);
-    }
+    let _ = SHARED_STATE.set(state);
 }
 
 fn get_shared_state() -> Option<Arc<InMemorySharedStateStore>> {
-    unsafe {
-        SHARED_STATE.clone()
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct ResearchData {
-    topic: String,
-    findings: Vec<String>,
-    confidence: f64,
+    SHARED_STATE.get().cloned()
 }
 
 #[derive(Serialize, Deserialize, Debug)]

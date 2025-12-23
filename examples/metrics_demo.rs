@@ -1,5 +1,5 @@
 use denkwerk::{
-    Agent, InMemoryMetricsCollector, LLMProvider, SequentialOrchestrator, WithMetrics,
+    Agent, InMemoryMetricsCollector, LLMProvider, SequentialOrchestrator,
     TokenUsage, MetricsCollector, SharedStateContextExt, InMemorySharedStateStore,
 };
 use std::sync::Arc;

@@ -53,11 +53,13 @@ fn greet(
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct Calculator;
 
 #[kernel_module]
 impl Calculator {
     #[kernel_function(name = "add_numbers", description = "Add two floating point values.")]
+    #[allow(dead_code)]
     fn add(
         &self,
         #[param(description = "First operand")] a: f64,
@@ -114,6 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn demo_function_calling(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = FunctionRegistry::new();
     registry.register(greet_kernel());
@@ -166,6 +169,7 @@ async fn demo_function_calling(provider: &Arc<dyn LLMProvider>) -> Result<(), Bo
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn demo_sequential(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn std::error::Error>> {
     let analyst = Agent::from_string(
         "Analyst",
@@ -202,6 +206,7 @@ async fn demo_sequential(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn 
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn demo_concurrent(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn std::error::Error>> {
     let physics = Agent::from_string(
         "PhysicsExpert",
@@ -227,6 +232,7 @@ async fn demo_concurrent(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn 
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn demo_group_chat(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn std::error::Error>> {
     let writer = Agent::from_string(
         "CopyWriter",
@@ -263,6 +269,7 @@ async fn demo_group_chat(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn 
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn demo_magentic(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn std::error::Error>> {
     let manager = MagenticManager::standard();
 
@@ -362,7 +369,7 @@ async fn demo_handoff(provider: &Arc<dyn LLMProvider>) -> Result<(), Box<dyn std
                 println!("{}: {}", colorize_agent(agent), message);
                 last_agent_message = Some((agent.clone(), message.clone()));
             }
-            denkwerk::HandoffEvent::HandOff { from, to } => {
+            denkwerk::HandoffEvent::HandOff { from, to, .. } => {
                 // Show the agent's reasoning for the handoff in color
                 if let Some((agent, reasoning)) = &last_agent_message {
                     if agent == from {

@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Decision context: mode={mode}");
     }
     println!("Planned steps:");
-    let mut task_with_tools = task.clone();
+    let task_with_tools = task.clone();
     for (idx, step) in plan.iter().enumerate() {
         match step {
             ExecutionStep::Agent(agent) => println!("  {idx}: agent -> {}", agent.name()),

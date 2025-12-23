@@ -52,10 +52,6 @@ Rules:
     pub fn name(&self) -> &str {
         self.agent.name()
     }
-
-    pub(crate) fn agent(&self) -> &Agent {
-        &self.agent
-    }
 }
 
 #[derive(Debug, Clone)]

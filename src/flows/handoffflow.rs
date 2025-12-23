@@ -408,57 +408,6 @@ impl HandoffOrchestrator {
         None
     }
 
-    fn create_handoff_agent(&self, agent: Agent) -> Agent {
-        // Kept for API compatibility, but actual roster injection happens in refresh_handoff_instructions()
-        let available_agents: Vec<&str> = self.agents.keys().map(|s| s.as_str()).collect();
-
-        let has_handoff_instructions = agent.instructions().to_lowercase().contains("delegate")
-            || agent.instructions().to_lowercase().contains("hand off")
-            || agent.instructions().to_lowercase().contains("coordinator");
-
-        let handoff_instructions = if has_handoff_instructions {
-            format!(
-                r#"
-{}
- 
-Available agents: {}
- 
-Just respond naturally - the system handles the handoffs automatically based on what you say."#,
-                agent.instructions(),
-                available_agents.join(", ")
-            )
-        } else if available_agents.is_empty() {
-            format!(
-                r#"
-{}
- 
-You can respond naturally to the user. When you want to complete the conversation, use: {{"action": "complete", "message": "final response"}}"#,
-                agent.instructions()
-            )
-        } else {
-            format!(
-                r#"
-{}
- 
-You can respond naturally to the user. The system will automatically detect when you want to:
-- Hand off to another agent (mention "hand off", "transfer", "connect", etc.)
-- Complete the task (mention "complete", "done", "finished", etc.)
- 
-Available agents: {}
- 
-Just respond naturally - the system handles the handoffs automatically based on what you say."#,
-                agent.instructions(),
-                available_agents.join(", ")
-            )
-        };
-
-        // Note: We can't modify agent.instructions directly since it's private
-        // This method is kept for API compatibility but the actual modification
-        // happens in refresh_handoff_instructions()
-        let _ = handoff_instructions;
-        agent
-    }
-
     fn refresh_handoff_instructions(&mut self) {
         // Note: Since Agent.instructions is private, we can't modify it here.
         // The original logic would append agent roster information to instructions,
