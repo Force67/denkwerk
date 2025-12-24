@@ -14,6 +14,7 @@ use evalexpr::{
 use super::sequential::{SequentialEvent, SequentialOrchestrator, SequentialRun};
 use crate::flows::handoffflow::{HandoffDirective, HandoffMatcher, HandoffRule};
 use crate::functions::http::load_http_function;
+use crate::skills::{SkillCatalog, SkillDefinition, SkillRuntime, SkillStub};
 use crate::{
     agents::{Agent, AgentError},
     functions::{FunctionCall, FunctionRegistry},
@@ -40,6 +41,8 @@ pub struct FlowDocument {
     pub agents: Vec<AgentDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompts: Vec<PromptDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -78,6 +81,8 @@ pub struct AgentDefinition {
     pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defaults: Option<CallSettings>,
 }
@@ -318,6 +323,8 @@ pub enum FlowLoadError {
     NodeNotFound(String),
     #[error("agent not found: {0}")]
     AgentNotFound(String),
+    #[error("skill not found: {0}")]
+    SkillNotFound(String),
     #[error("missing output node in flow: {0}")]
     MissingOutput(String),
     #[error("missing parallel branches for node: {0}")]
@@ -392,13 +399,15 @@ impl FlowBuilder {
         tool_registries: &HashMap<String, Arc<FunctionRegistry>>,
     ) -> Result<HashMap<String, Agent>, FlowLoadError> {
         let mut agents = HashMap::new();
-        
+
         let prompt_map: HashMap<String, &PromptDefinition> = self
             .document
             .prompts
             .iter()
             .map(|p| (p.id.clone(), p))
             .collect();
+
+        let skill_catalog = SkillCatalog::new(self.base_dir.clone(), self.document.skills.clone());
 
         for def in &self.document.agents {
             let instructions = if let Some(ref sys_prompt) = def.system_prompt {
@@ -420,6 +429,22 @@ impl FlowBuilder {
                 String::new()
             };
 
+            let mut skill_stubs = Vec::new();
+            for skill_id in &def.skills {
+                let stub = skill_catalog
+                    .stub(skill_id)
+                    .ok_or_else(|| FlowLoadError::SkillNotFound(skill_id.clone()))?;
+                skill_stubs.push(stub);
+            }
+
+            let mut instructions = instructions;
+            if let Some(directory) = format_skill_directory(&skill_stubs) {
+                if !instructions.is_empty() {
+                    instructions.push_str("\n\n");
+                }
+                instructions.push_str(&directory);
+            }
+
             let mut agent = Agent::from_string(def.id.clone(), instructions);
 
             if let Some(desc) = &def.description {
@@ -440,6 +465,8 @@ impl FlowBuilder {
                 agent = apply_call_settings(agent, Some(defaults));
             }
 
+            agent = agent.with_tool_ids(def.tools.clone()).with_skills(skill_stubs);
+
             if !def.tools.is_empty() {
                 let mut combined = FunctionRegistry::new();
                 let mut any = false;
@@ -458,6 +485,21 @@ impl FlowBuilder {
         }
 
         Ok(agents)
+    }
+
+    fn build_skill_runtime(
+        &self,
+        provider: Arc<dyn LLMProvider>,
+        model: &str,
+        tool_registries: &HashMap<String, Arc<FunctionRegistry>>,
+    ) -> Option<Arc<SkillRuntime>> {
+        if self.document.skills.is_empty() {
+            return None;
+        }
+
+        let catalog = Arc::new(SkillCatalog::new(self.base_dir.clone(), self.document.skills.clone()));
+        let registries = Arc::new(tool_registries.clone());
+        Some(Arc::new(SkillRuntime::new(catalog, registries, provider, model.to_string())))
     }
 
     pub fn build_sequential_orchestrator(
@@ -497,7 +539,12 @@ impl FlowBuilder {
             .cloned()
             .unwrap_or_else(|| "gpt-4o".to_string());
 
-        Ok(SequentialOrchestrator::new(provider, model).with_agents(pipeline))
+        let provider_clone = Arc::clone(&provider);
+        let mut orchestrator = SequentialOrchestrator::new(provider, model.clone()).with_agents(pipeline);
+        if let Some(runtime) = self.build_skill_runtime(provider_clone, &model, tool_registries) {
+            orchestrator = orchestrator.with_skill_runtime(runtime);
+        }
+        Ok(orchestrator)
     }
 
     pub fn build_concurrent_orchestrator(
@@ -521,7 +568,13 @@ impl FlowBuilder {
             .filter_map(|id| agents.get(&id).cloned())
             .collect::<Vec<_>>();
 
-        Ok(crate::flows::concurrent::ConcurrentOrchestrator::new(provider, model).with_agents(pipeline))
+        let provider_clone = Arc::clone(&provider);
+        let mut orchestrator = crate::flows::concurrent::ConcurrentOrchestrator::new(provider, model.clone())
+            .with_agents(pipeline);
+        if let Some(runtime) = self.build_skill_runtime(provider_clone, &model, tool_registries) {
+            orchestrator = orchestrator.with_skill_runtime(runtime);
+        }
+        Ok(orchestrator)
     }
 
     pub fn build_group_chat_orchestrator(
@@ -554,12 +607,17 @@ impl FlowBuilder {
             crate::flows::group_chat::RoundRobinGroupChatManager::new()
         };
 
-        Ok(crate::flows::group_chat::GroupChatOrchestrator::new(
+        let provider_clone = Arc::clone(&provider);
+        let mut orchestrator = crate::flows::group_chat::GroupChatOrchestrator::new(
             provider,
-            model,
+            model.clone(),
             manager,
         )
-        .with_agents(pipeline))
+        .with_agents(pipeline);
+        if let Some(runtime) = self.build_skill_runtime(provider_clone, &model, tool_registries) {
+            orchestrator = orchestrator.with_skill_runtime(runtime);
+        }
+        Ok(orchestrator)
     }
 
     pub fn build_handoff_orchestrator(
@@ -579,7 +637,11 @@ impl FlowBuilder {
             .map(|a| a.model.clone())
             .unwrap_or_else(|| "gpt-4o".to_string());
 
-        let mut orchestrator = crate::flows::handoffflow::HandoffOrchestrator::new(provider, model);
+        let provider_clone = Arc::clone(&provider);
+        let mut orchestrator = crate::flows::handoffflow::HandoffOrchestrator::new(provider, model.clone());
+        if let Some(runtime) = self.build_skill_runtime(provider_clone, &model, tool_registries) {
+            orchestrator = orchestrator.with_skill_runtime(runtime);
+        }
 
         if let Some(opts) = &flow.handoff {
             if let Some(max_handoffs) = opts.max_handoffs {
@@ -1422,6 +1484,22 @@ fn load_instructions(base_dir: &Path, prompt: Option<&str>) -> Result<String, Fl
     }
 }
 
+fn format_skill_directory(skills: &[SkillStub]) -> Option<String> {
+    if skills.is_empty() {
+        return None;
+    }
+
+    let mut out = String::from("Available skills (load with spawn_skill):\n");
+    for skill in skills {
+        let desc = skill
+            .description
+            .as_deref()
+            .unwrap_or("No description provided.");
+        out.push_str(&format!("- {}: {}\n", skill.id, desc));
+    }
+    Some(out.trim_end().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1532,6 +1610,7 @@ flows:
                 description: Some("Extract insights".to_string()),
                 system_prompt: Some("Analyze carefully".to_string()),
                 tools: vec!["search".to_string(), "calculator".to_string()],
+                skills: vec![],
                 defaults: Some(CallSettings {
                     model: Some("gpt-4o-mini".to_string()),
                     temperature: Some(0.7),
@@ -1708,6 +1787,7 @@ flows:
                 description: None,
                 system_prompt: Some("Be concise".to_string()),
                 tools: vec!["browser".to_string()],
+                skills: vec![],
                 defaults: Some(CallSettings {
                     model: Some("gpt-4o-mini".to_string()),
                     temperature: Some(0.2),
@@ -1727,6 +1807,7 @@ flows:
                 spec: Some("specs/browser.yaml".to_string()),
                 function: Some("browse".to_string()),
             }],
+            skills: vec![],
             prompts: vec![PromptDefinition {
                 id: "research_prompt".to_string(),
                 file: Some("prompts/research.txt".to_string()),

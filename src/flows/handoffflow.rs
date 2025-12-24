@@ -12,6 +12,7 @@ use tokio::time;
 use crate::{
     eval::scenario::DecisionSource,
     functions::{FunctionRegistry, ToolChoice, json_schema_for, to_value},
+    skills::SkillRuntime,
     types::{ChatMessage, TokenUsage},
     Agent, AgentError, LLMError, LLMProvider,
 };
@@ -337,6 +338,7 @@ pub struct HandoffOrchestrator {
     force_handoff_tool: bool,
     event_callback: Option<Arc<dyn Fn(&HandoffEvent) + Send + Sync>>,
     shared_state: Option<Arc<dyn SharedStateContext>>,
+    skill_runtime: Option<Arc<SkillRuntime>>,
     metrics_collector: Option<Arc<dyn MetricsCollector>>,
 }
 
@@ -354,6 +356,7 @@ impl HandoffOrchestrator {
             force_handoff_tool: false,
             event_callback: None,
             shared_state: None,
+            skill_runtime: None,
             metrics_collector: None,
         }
     }
@@ -434,6 +437,11 @@ impl HandoffOrchestrator {
     /// internal `handoff` tool call (rules can still trigger handoffs).
     pub fn with_force_handoff_tool(mut self, enabled: bool) -> Self {
         self.force_handoff_tool = enabled;
+        self
+    }
+
+    pub fn with_skill_runtime(mut self, runtime: Arc<SkillRuntime>) -> Self {
+        self.skill_runtime = Some(runtime);
         self
     }
 
@@ -603,7 +611,12 @@ impl<'a> HandoffSession<'a> {
                 .get(&self.active_agent)
                 .ok_or_else(|| AgentError::UnknownAgent(self.active_agent.clone()))?;
 
-            let internal_tools = self.orchestrator.internal_tools();
+            let mut internal_tools = self.orchestrator.internal_tools();
+            if let Some(runtime) = self.orchestrator.skill_runtime.as_ref() {
+                if let Some(skill_tools) = runtime.registry_for_agent(agent, &self.transcript) {
+                    internal_tools.extend_from(&skill_tools);
+                }
+            }
             let fut = agent.execute_with_tools(
                 self.orchestrator.provider.as_ref(),
                 &self.orchestrator.model,

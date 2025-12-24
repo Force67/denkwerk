@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::{
     functions::{FunctionRegistry, ToolChoice},
+    skills::SkillStub,
     types::{ChatMessage, CompletionRequest},
     flows::handoffflow::{AgentAction, AgentTurn, ActionEnvelope},
     LLMError, LLMProvider,
@@ -49,6 +50,8 @@ pub struct Agent {
     description: Option<String>,
     instructions: String,
     functions: Option<Arc<FunctionRegistry>>,
+    tool_ids: Vec<String>,
+    skills: Vec<SkillStub>,
     temperature: Option<f32>,
     top_p: Option<f32>,
     max_tokens: Option<u32>,
@@ -77,6 +80,8 @@ impl Agent {
             description: None,
             instructions: instructions.into(),
             functions: None,
+            tool_ids: Vec::new(),
+            skills: Vec::new(),
             temperature: None,
             top_p: None,
             max_tokens: None,
@@ -115,6 +120,28 @@ impl Agent {
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
+    }
+
+    pub fn with_tool_ids(mut self, tool_ids: Vec<String>) -> Self {
+        self.tool_ids = tool_ids;
+        self
+    }
+
+    pub fn tool_ids(&self) -> Vec<String> {
+        self.tool_ids.clone()
+    }
+
+    pub fn with_skills(mut self, skills: Vec<SkillStub>) -> Self {
+        self.skills = skills;
+        self
+    }
+
+    pub fn skills(&self) -> &[SkillStub] {
+        &self.skills
+    }
+
+    pub fn skill_ids(&self) -> Vec<String> {
+        self.skills.iter().map(|skill| skill.id.clone()).collect()
     }
 
     pub fn with_function_registry(mut self, registry: Arc<FunctionRegistry>) -> Self {
@@ -230,7 +257,7 @@ impl Agent {
             request = request.with_tool_choice(tool_choice.clone());
         }
 
-        let max_tool_rounds = 2;
+        let max_tool_rounds = 4;
         let mut all_tool_calls = Vec::new();
         let mut last_usage = None;
         let mut last_content = String::new();

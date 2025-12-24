@@ -804,6 +804,7 @@ fn default_document() -> FlowDocument {
         metadata: None,
         agents: vec![],
         tools: vec![],
+        skills: vec![],
         prompts: vec![],
         flows: vec![denkwerk::FlowDefinition {
             id: "main".to_string(),

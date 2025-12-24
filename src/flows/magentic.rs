@@ -9,6 +9,7 @@ use serde::Deserialize;
 use crate::{
     agents::{Agent, AgentError},
     metrics::{AgentMetrics, ExecutionTimer, MetricsCollector, WithMetrics},
+    skills::SkillRuntime,
     types::{ChatMessage, CompletionRequest, MessageRole},
     LLMProvider,
 };
@@ -168,6 +169,7 @@ pub struct MagenticOrchestrator {
     max_rounds: usize,
     event_callback: Option<Arc<dyn Fn(&MagenticEvent) + Send + Sync>>,
     shared_state: Option<Arc<dyn SharedStateContext>>,
+    skill_runtime: Option<Arc<SkillRuntime>>,
     metrics_collector: Option<Arc<dyn MetricsCollector>>,
 }
 
@@ -186,6 +188,7 @@ impl MagenticOrchestrator {
             max_rounds: 12,
             event_callback: None,
             shared_state: None,
+            skill_runtime: None,
             metrics_collector: None,
         }
     }
@@ -214,6 +217,11 @@ impl MagenticOrchestrator {
 
     pub fn with_shared_state(mut self, shared_state: Arc<dyn SharedStateContext>) -> Self {
         self.shared_state = Some(shared_state);
+        self
+    }
+
+    pub fn with_skill_runtime(mut self, runtime: Arc<SkillRuntime>) -> Self {
+        self.skill_runtime = Some(runtime);
         self
     }
 
@@ -310,8 +318,18 @@ impl MagenticOrchestrator {
                     self.emit_event(&event);
                     events.push(event);
 
+                    let skill_tools = self
+                        .skill_runtime
+                        .as_ref()
+                        .and_then(|runtime| runtime.registry_for_agent(&agent, &transcript));
                     let turn = agent
-                        .execute(self.provider.as_ref(), &self.model, &transcript)
+                        .execute_with_tools(
+                            self.provider.as_ref(),
+                            &self.model,
+                            &transcript,
+                            skill_tools.as_ref(),
+                            None,
+                        )
                         .await;
 
                     let turn = match turn {

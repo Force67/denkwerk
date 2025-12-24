@@ -5,6 +5,7 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 use crate::{
     agents::{Agent, AgentError},
     metrics::{AgentMetrics, ExecutionTimer, MetricsCollector, WithMetrics},
+    skills::SkillRuntime,
     types::ChatMessage,
     LLMProvider,
 };
@@ -38,6 +39,7 @@ pub struct ConcurrentOrchestrator {
     agents: Vec<Agent>,
     event_callback: Option<Arc<dyn Fn(&ConcurrentEvent) + Send + Sync>>,
     shared_state: Option<Arc<dyn SharedStateContext>>,
+    skill_runtime: Option<Arc<SkillRuntime>>,
     metrics_collector: Option<Arc<dyn MetricsCollector>>,
 }
 
@@ -49,6 +51,7 @@ impl ConcurrentOrchestrator {
             agents: Vec::new(),
             event_callback: None,
             shared_state: None,
+            skill_runtime: None,
             metrics_collector: None,
         }
     }
@@ -72,6 +75,11 @@ impl ConcurrentOrchestrator {
 
     pub fn with_shared_state(mut self, shared_state: Arc<dyn SharedStateContext>) -> Self {
         self.shared_state = Some(shared_state);
+        self
+    }
+
+    pub fn with_skill_runtime(mut self, runtime: Arc<SkillRuntime>) -> Self {
+        self.skill_runtime = Some(runtime);
         self
     }
 
@@ -103,12 +111,14 @@ impl ConcurrentOrchestrator {
 
         let mut futures = FuturesUnordered::new();
         let metrics_collector = self.metrics_collector.clone();
+        let skill_runtime = self.skill_runtime.clone();
         for agent in &self.agents {
             let agent = agent.clone();
             let provider = Arc::clone(&self.provider);
             let model = self.model.clone();
             let task_clone = task.clone();
             let metrics_collector = metrics_collector.clone();
+            let skill_runtime = skill_runtime.clone();
 
             futures.push(async move {
                 let mut metrics = metrics_collector
@@ -116,7 +126,18 @@ impl ConcurrentOrchestrator {
                     .map(|_| AgentMetrics::new(agent.name().to_string()));
                 let timer = ExecutionTimer::new();
                 let history = vec![ChatMessage::user(task_clone)];
-                let turn = agent.execute(provider.as_ref(), &model, &history).await;
+                let skill_tools = skill_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.registry_for_agent(&agent, &history));
+                let turn = agent
+                    .execute_with_tools(
+                        provider.as_ref(),
+                        &model,
+                        &history,
+                        skill_tools.as_ref(),
+                        None,
+                    )
+                    .await;
                 match turn {
                     Ok(turn) => {
                         if let (Some(ref mut m), Some(usage)) = (&mut metrics, turn.usage.as_ref()) {

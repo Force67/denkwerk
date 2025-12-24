@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     agents::{Agent, AgentError},
+    skills::SkillRuntime,
     types::ChatMessage,
     LLMProvider,
 };
@@ -38,6 +39,7 @@ pub struct SequentialOrchestrator {
     pipeline: Vec<Agent>,
     event_callback: Option<Arc<dyn Fn(&SequentialEvent) + Send + Sync>>,
     shared_state: Option<Arc<dyn SharedStateContext>>,
+    skill_runtime: Option<Arc<SkillRuntime>>,
     metrics_collector: Option<Arc<dyn MetricsCollector>>,
 }
 
@@ -49,6 +51,7 @@ impl SequentialOrchestrator {
             pipeline: Vec::new(),
             event_callback: None,
             shared_state: None,
+            skill_runtime: None,
             metrics_collector: None,
         }
     }
@@ -72,6 +75,11 @@ impl SequentialOrchestrator {
 
     pub fn with_shared_state(mut self, shared_state: Arc<dyn SharedStateContext>) -> Self {
         self.shared_state = Some(shared_state);
+        self
+    }
+
+    pub fn with_skill_runtime(mut self, runtime: Arc<SkillRuntime>) -> Self {
+        self.skill_runtime = Some(runtime);
         self
     }
 
@@ -114,8 +122,18 @@ impl SequentialOrchestrator {
 
         for (index, agent) in self.pipeline.iter().enumerate() {
             let call_timer = ExecutionTimer::new();
+            let skill_tools = self
+                .skill_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.registry_for_agent(agent, &transcript));
             let turn = match agent
-                .execute(self.provider.as_ref(), &self.model, &transcript)
+                .execute_with_tools(
+                    self.provider.as_ref(),
+                    &self.model,
+                    &transcript,
+                    skill_tools.as_ref(),
+                    None,
+                )
                 .await
             {
                 Ok(turn) => turn,

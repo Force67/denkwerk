@@ -1,0 +1,45 @@
+version: 0.1
+metadata:
+  name: skills_demo
+  description: Demo of on-demand skills with summarized results
+  tags: [demo, skills]
+
+skills:
+  - id: uuid_fetcher
+    description: Fetch a fresh UUID via HTTP and return it with a short summary.
+    file: skills/uuid_fetcher.md
+    tools: [http_uuid]
+    include_agent_tools: false
+    allowed_tools: [http_uuid]
+
+agents:
+  - id: assistant
+    model: openai/gpt-4o-mini
+    name: Skillful Assistant
+    system_prompt: prompts/assistant.md
+    skills: [uuid_fetcher]
+
+tools:
+  - id: http_uuid
+    kind: http
+    spec: tools/http_uuid.yaml
+
+flows:
+  - id: main
+    entry: start
+    nodes:
+      - id: start
+        type: input
+        outputs:
+          - label: out
+      - id: ask
+        type: agent
+        agent: assistant
+        inputs:
+          - from: start:out
+        outputs:
+          - label: out
+      - id: done
+        type: output
+        inputs:
+          - from: ask:out

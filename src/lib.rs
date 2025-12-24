@@ -4,12 +4,13 @@
  pub mod functions;
  pub mod agents;
  pub mod flows;
- pub mod plugins;
- pub mod history;
- pub mod eval;
- pub mod bench;
- pub mod shared_state;
- pub mod metrics;
+pub mod plugins;
+pub mod history;
+pub mod eval;
+pub mod bench;
+pub mod shared_state;
+pub mod metrics;
+pub mod skills;
 
 pub use error::LLMError;
 pub use providers::LLMProvider;
@@ -61,6 +62,7 @@ pub use flows::spec::{
     ExecutionStep,
     ToolRunResult,
 };
+pub use skills::{SkillDefinition, SkillResult, SkillRuntime, SkillStub};
 pub use flows::magentic::{
     MagenticDecision,
     MagenticEvent,
