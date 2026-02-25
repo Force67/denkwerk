@@ -191,6 +191,8 @@ struct ProviderError {
 struct OpenRouterEmbeddingRequestBody {
     model: String,
     input: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -717,6 +719,7 @@ impl LLMProvider for OpenRouter {
         let body = OpenRouterEmbeddingRequestBody {
             model: request.model,
             input: request.input,
+            dimensions: request.dimensions,
         };
 
         let builder = self

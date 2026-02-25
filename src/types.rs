@@ -217,6 +217,8 @@ pub struct EmbeddingRequest {
     pub input: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<u32>,
 }
 
 impl EmbeddingRequest {
@@ -225,11 +227,17 @@ impl EmbeddingRequest {
             model: model.into(),
             input,
             user: None,
+            dimensions: None,
         }
     }
 
     pub fn with_user(mut self, user: impl Into<String>) -> Self {
         self.user = Some(user.into());
+        self
+    }
+
+    pub fn with_dimensions(mut self, dimensions: u32) -> Self {
+        self.dimensions = Some(dimensions);
         self
     }
 }
@@ -325,4 +333,23 @@ pub struct ModelInfo {
     pub pricing: ModelPricing,
     pub capabilities: ModelCapabilities,
     pub reasoning_config: Option<ReasoningConfig>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EmbeddingRequest;
+
+    #[test]
+    fn embedding_request_defaults_dimensions_to_none() {
+        let request = EmbeddingRequest::new("model", vec!["input".to_string()]);
+
+        assert!(request.dimensions.is_none());
+    }
+
+    #[test]
+    fn embedding_request_sets_dimensions_via_builder() {
+        let request = EmbeddingRequest::new("model", vec!["input".to_string()]).with_dimensions(1536);
+
+        assert_eq!(request.dimensions, Some(1536));
+    }
 }

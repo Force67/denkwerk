@@ -259,6 +259,8 @@ struct AzureEmbeddingRequestBody {
     input: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -521,6 +523,7 @@ impl LLMProvider for AzureOpenAI {
             model: request.model.clone(),
             input: request.input,
             user: request.user,
+            dimensions: request.dimensions,
         };
 
         let builder = self
