@@ -237,8 +237,6 @@ pub struct EmbeddingRequest {
     pub dimensions: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dimensions: Option<u32>,
 }
 
 impl EmbeddingRequest {
@@ -248,7 +246,6 @@ impl EmbeddingRequest {
             input,
             dimensions: None,
             user: None,
-            dimensions: None,
         }
     }
 
@@ -259,11 +256,6 @@ impl EmbeddingRequest {
 
     pub fn with_user(mut self, user: impl Into<String>) -> Self {
         self.user = Some(user.into());
-        self
-    }
-
-    pub fn with_dimensions(mut self, dimensions: u32) -> Self {
-        self.dimensions = Some(dimensions);
         self
     }
 }
