@@ -433,6 +433,7 @@ impl LLMProvider for AzureOpenAI {
                             name: None,
                             tool_call_id: None,
                             tool_calls: resolved_tool_calls.clone(),
+                            images: Vec::new(),
                         };
 
                         let completion = CompletionResponse {

@@ -88,6 +88,16 @@ pub use flows::group_chat::{
     GroupChatRun,
     RoundRobinGroupChatManager,
 };
+pub use flows::dispatch::{
+    DispatchEvent,
+    DispatchOrchestrator,
+    DispatchSession,
+    DispatchTurn,
+    InputMatcher,
+    InputRoute,
+    SpokeConfig,
+    SpokeResult,
+};
 pub use flows::flow_builder::{
     Flow,
     FlowResult,

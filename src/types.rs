@@ -27,6 +27,10 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    /// Optional image data URLs (e.g. `data:image/jpeg;base64,...`) for multimodal messages.
+    /// Skipped during normal serde; the provider serializer handles these specially.
+    #[serde(skip)]
+    pub images: Vec<String>,
 }
 
 impl ChatMessage {
@@ -37,6 +41,7 @@ impl ChatMessage {
             name: None,
             tool_call_id: None,
             tool_calls: Vec::new(),
+            images: Vec::new(),
         }
     }
 
@@ -59,6 +64,19 @@ impl ChatMessage {
             name: None,
             tool_call_id: Some(id.into()),
             tool_calls: Vec::new(),
+            images: Vec::new(),
+        }
+    }
+
+    /// Create a user message with attached images (data URLs).
+    pub fn user_with_images(content: impl Into<String>, images: Vec<String>) -> Self {
+        Self {
+            role: MessageRole::User,
+            content: Some(content.into()),
+            name: None,
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            images,
         }
     }
 
@@ -216,6 +234,8 @@ pub struct EmbeddingRequest {
     pub model: String,
     pub input: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
 }
 
@@ -224,8 +244,14 @@ impl EmbeddingRequest {
         Self {
             model: model.into(),
             input,
+            dimensions: None,
             user: None,
         }
+    }
+
+    pub fn with_dimensions(mut self, dimensions: u32) -> Self {
+        self.dimensions = Some(dimensions);
+        self
     }
 
     pub fn with_user(mut self, user: impl Into<String>) -> Self {

@@ -284,6 +284,8 @@ struct OpenAIEmbeddingRequestBody {
     model: String,
     input: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     user: Option<String>,
 }
 
@@ -459,6 +461,7 @@ impl LLMProvider for OpenAI {
                             name: None,
                             tool_call_id: None,
                             tool_calls: resolved_tool_calls.clone(),
+                            images: Vec::new(),
                         };
 
                         let completion = CompletionResponse {
@@ -590,6 +593,7 @@ impl LLMProvider for OpenAI {
         let body = OpenAIEmbeddingRequestBody {
             model: request.model,
             input: request.input,
+            dimensions: request.dimensions,
             user: request.user,
         };
 

@@ -183,7 +183,25 @@ impl Agent {
         self
     }
 
+    pub fn temperature(&self) -> Option<f32> {
+        self.temperature
+    }
 
+    pub fn top_p(&self) -> Option<f32> {
+        self.top_p
+    }
+
+    pub fn max_tokens(&self) -> Option<u32> {
+        self.max_tokens
+    }
+
+    pub fn provider_override(&self) -> Option<Arc<dyn LLMProvider>> {
+        self.provider_override.clone()
+    }
+
+    pub fn model_override(&self) -> Option<&str> {
+        self.model_override.as_deref()
+    }
 
     pub(crate) async fn execute(
         &self,

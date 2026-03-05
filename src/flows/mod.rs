@@ -3,5 +3,6 @@ pub mod magentic;
 pub mod sequential;
 pub mod concurrent;
 pub mod group_chat;
+pub mod dispatch;
 pub mod spec;
 pub mod flow_builder;

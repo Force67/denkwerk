@@ -149,7 +149,7 @@ impl OpenRouter {
 #[derive(Debug, Serialize)]
 struct OpenRouterRequestBody {
     model: String,
-    messages: Vec<ChatMessage>,
+    messages: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -164,6 +164,48 @@ struct OpenRouterRequestBody {
     tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+}
+
+/// Convert a `ChatMessage` to a JSON `Value`, building a multimodal content
+/// array when the message carries image attachments.
+fn chat_message_to_json(msg: &ChatMessage) -> Value {
+    if msg.images.is_empty() {
+        // Fast path: normal text-only message.
+        return serde_json::to_value(msg).unwrap_or_default();
+    }
+
+    // Build multimodal content array: text block + image blocks.
+    let mut content_parts: Vec<Value> = Vec::with_capacity(1 + msg.images.len());
+    if let Some(text) = &msg.content {
+        content_parts.push(serde_json::json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+    for image_url in &msg.images {
+        content_parts.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": image_url },
+        }));
+    }
+
+    let mut obj = serde_json::json!({
+        "role": msg.role,
+        "content": content_parts,
+    });
+
+    // Preserve optional fields that may be present.
+    if let Some(name) = &msg.name {
+        obj["name"] = serde_json::json!(name);
+    }
+    if let Some(tool_call_id) = &msg.tool_call_id {
+        obj["tool_call_id"] = serde_json::json!(tool_call_id);
+    }
+    if !msg.tool_calls.is_empty() {
+        obj["tool_calls"] = serde_json::to_value(&msg.tool_calls).unwrap_or_default();
+    }
+
+    obj
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,6 +233,8 @@ struct ProviderError {
 struct OpenRouterEmbeddingRequestBody {
     model: String,
     input: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -468,7 +512,7 @@ impl LLMProvider for OpenRouter {
 
         let body = OpenRouterRequestBody {
             model,
-            messages,
+            messages: messages.iter().map(chat_message_to_json).collect(),
             max_tokens,
             temperature,
             top_p,
@@ -529,7 +573,7 @@ impl LLMProvider for OpenRouter {
 
         let body = OpenRouterRequestBody {
             model,
-            messages,
+            messages: messages.iter().map(chat_message_to_json).collect(),
             max_tokens,
             temperature,
             top_p,
@@ -717,6 +761,7 @@ impl LLMProvider for OpenRouter {
         let body = OpenRouterEmbeddingRequestBody {
             model: request.model,
             input: request.input,
+            dimensions: request.dimensions,
         };
 
         let builder = self
@@ -776,6 +821,7 @@ impl LLMProvider for OpenRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MessageRole;
 
     #[test]
     fn parses_openrouter_catalog_into_model_info() {
@@ -802,6 +848,47 @@ mod tests {
         assert!(!second.capabilities.supports_reasoning);
         assert!(!second.capabilities.supports_vision);
         assert!(second.reasoning_config.is_none());
+    }
+
+    #[test]
+    fn user_with_images_constructor() {
+        let msg = ChatMessage::user_with_images(
+            "Review this photo",
+            vec!["data:image/jpeg;base64,abc123".to_string()],
+        );
+        assert_eq!(msg.role, MessageRole::User);
+        assert_eq!(msg.content.as_deref(), Some("Review this photo"));
+        assert_eq!(msg.images.len(), 1);
+        assert_eq!(msg.images[0], "data:image/jpeg;base64,abc123");
+    }
+
+    #[test]
+    fn chat_message_to_json_text_only() {
+        let msg = ChatMessage::user("Hello");
+        let json = chat_message_to_json(&msg);
+        // Text-only should serialize content as a string, not an array.
+        assert_eq!(json["content"].as_str(), Some("Hello"));
+        assert_eq!(json["role"].as_str(), Some("user"));
+    }
+
+    #[test]
+    fn chat_message_to_json_multimodal() {
+        let msg = ChatMessage::user_with_images(
+            "What's in this image?",
+            vec!["data:image/png;base64,AAAA".to_string()],
+        );
+        let json = chat_message_to_json(&msg);
+        assert_eq!(json["role"].as_str(), Some("user"));
+
+        let content = json["content"].as_array().expect("content should be an array");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"].as_str(), Some("text"));
+        assert_eq!(content[0]["text"].as_str(), Some("What's in this image?"));
+        assert_eq!(content[1]["type"].as_str(), Some("image_url"));
+        assert_eq!(
+            content[1]["image_url"]["url"].as_str(),
+            Some("data:image/png;base64,AAAA")
+        );
     }
 }
 
