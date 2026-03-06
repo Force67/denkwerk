@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::Deserialize;
 
 use crate::types::{
     CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
@@ -10,6 +11,59 @@ pub mod openai;
 pub mod openrouter;
 pub mod scripted;
 pub mod azure_openai;
+
+/// A single content block in a streaming delta. All OpenAI-compatible APIs use this shape
+/// for structured content, but the standard chat completions API sends `delta.content` as
+/// a plain string. The [`deserialize_content_blocks`] function handles both representations.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct StreamContentBlock {
+    #[serde(rename = "type")]
+    #[serde(default)]
+    pub _kind: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+/// Deserializes a streaming delta content field that may arrive as:
+/// - a plain string  (standard chat completions: `"content": "Hello"`)
+/// - an array of content blocks (structured format: `"content": [{"type":"text","text":"Hello"}]`)
+/// - null / absent
+pub(crate) fn deserialize_content_blocks<'de, D>(
+    deserializer: D,
+) -> Result<Vec<StreamContentBlock>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct ContentVisitor;
+
+    impl<'de> de::Visitor<'de> for ContentVisitor {
+        type Value = Vec<StreamContentBlock>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string, null, or array of content blocks")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(vec![StreamContentBlock { _kind: None, text: Some(v.to_owned()) }])
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+            Vec::<StreamContentBlock>::deserialize(de::value::SeqAccessDeserializer::new(seq))
+        }
+    }
+
+    deserializer.deserialize_any(ContentVisitor)
+}
 
 #[async_trait]
 pub trait LLMProvider: Send + Sync {

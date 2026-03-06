@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::{multipart::Form, Client, RequestBuilder};
+use reqwest::{multipart::Form, Client, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -146,7 +146,7 @@ impl OpenRouter {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct OpenRouterRequestBody {
     model: String,
     messages: Vec<Value>,
@@ -268,19 +268,10 @@ struct OpenRouterStreamChoice {
 
 #[derive(Debug, Default, Deserialize)]
 struct OpenRouterStreamDelta {
-    #[serde(default)]
-    content: Vec<OpenRouterStreamContent>,
-    #[serde(default)]
-    reasoning: Vec<OpenRouterStreamContent>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct OpenRouterStreamContent {
-    #[serde(rename = "type")]
-    #[serde(default)]
-    _kind: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
+    #[serde(default, deserialize_with = "super::deserialize_content_blocks")]
+    content: Vec<super::StreamContentBlock>,
+    #[serde(default, deserialize_with = "super::deserialize_content_blocks")]
+    reasoning: Vec<super::StreamContentBlock>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,6 +313,36 @@ struct OpenRouterCatalogModel {
     reasoning_config: Option<OpenRouterReasoningConfig>,
     #[serde(default)]
     features: Option<OpenRouterModelFeatures>,
+}
+
+fn should_retry_with_completion_tokens(status: StatusCode, text: &str) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && text.contains("max_tokens")
+        && text.contains("max_completion_tokens")
+}
+
+fn should_retry_without_temperature(status: StatusCode, text: &str) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && text.contains("temperature")
+        && (text.contains("Unsupported value") || text.contains("Only the default"))
+}
+
+fn body_with_max_completion_tokens(body: &OpenRouterRequestBody) -> Result<Value, LLMError> {
+    let mut value = serde_json::to_value(body)?;
+    if let Some(object) = value.as_object_mut() {
+        if let Some(tokens) = object.remove("max_tokens") {
+            object.insert("max_completion_tokens".to_string(), tokens);
+        }
+    }
+    Ok(value)
+}
+
+fn body_without_temperature(body: &OpenRouterRequestBody) -> Result<Value, LLMError> {
+    let mut value = serde_json::to_value(body)?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("temperature");
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -526,8 +547,40 @@ impl LLMProvider for OpenRouter {
             .with_default_headers(self.client.post(self.endpoint("chat/completions")))
             .json(&body);
 
-        let response = builder.send().await?;
-        let status = response.status();
+        let mut response = builder.send().await?;
+        let mut status = response.status();
+
+        if !status.is_success() {
+            let text = response.text().await?;
+            if should_retry_with_completion_tokens(status, &text) {
+                let fallback_body = body_with_max_completion_tokens(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if should_retry_without_temperature(status, &text) {
+                let fallback_body = body_without_temperature(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if let Ok(error_body) = serde_json::from_str::<OpenRouterErrorBody>(&text) {
+                if let Some(error) = error_body.error {
+                    return Err(LLMError::Provider(error.message));
+                }
+                return Err(LLMError::Provider(format!(
+                    "unexpected status {status}: {text}"
+                )));
+            } else {
+                return Err(LLMError::Provider(format!(
+                    "unexpected status {status}: {text}"
+                )));
+            }
+        }
 
         if !status.is_success() {
             let text = response.text().await?;
@@ -589,8 +642,44 @@ impl LLMProvider for OpenRouter {
             .header("Cache-Control", "no-cache")
             .json(&body);
 
-        let response = builder.send().await?;
-        let status = response.status();
+        let mut response = builder.send().await?;
+        let mut status = response.status();
+
+        if !status.is_success() {
+            let text = response.text().await?;
+            if should_retry_with_completion_tokens(status, &text) {
+                let fallback_body = body_with_max_completion_tokens(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .header("Accept", "text/event-stream")
+                    .header("Cache-Control", "no-cache")
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if should_retry_without_temperature(status, &text) {
+                let fallback_body = body_without_temperature(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .header("Accept", "text/event-stream")
+                    .header("Cache-Control", "no-cache")
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if let Ok(error_body) = serde_json::from_str::<OpenRouterErrorBody>(&text) {
+                if let Some(error) = error_body.error {
+                    return Err(LLMError::Provider(error.message));
+                }
+                return Err(LLMError::Provider(format!(
+                    "unexpected status {status}: {text}"
+                )));
+            } else {
+                return Err(LLMError::Provider(format!(
+                    "unexpected status {status}: {text}"
+                )));
+            }
+        }
 
         if !status.is_success() {
             let text = response.text().await?;

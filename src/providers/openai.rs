@@ -175,21 +175,12 @@ struct ChatCompletionChunkChoice {
 
 #[derive(Debug, Default, Deserialize)]
 struct ChunkDelta {
-    #[serde(default)]
-    content: Vec<ChunkContent>,
-    #[serde(default)]
-    reasoning: Vec<ChunkContent>,
+    #[serde(default, deserialize_with = "super::deserialize_content_blocks")]
+    content: Vec<super::StreamContentBlock>,
+    #[serde(default, deserialize_with = "super::deserialize_content_blocks")]
+    reasoning: Vec<super::StreamContentBlock>,
     #[serde(default)]
     tool_calls: Vec<ChunkToolCall>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ChunkContent {
-    #[serde(rename = "type")]
-    #[serde(default)]
-    _kind: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -309,12 +300,26 @@ fn should_retry_with_completion_tokens(status: StatusCode, text: &str) -> bool {
         && text.contains("max_completion_tokens")
 }
 
+fn should_retry_without_temperature(status: StatusCode, text: &str) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && text.contains("temperature")
+        && (text.contains("Unsupported value") || text.contains("Only the default"))
+}
+
 fn body_with_max_completion_tokens(body: &OpenAIRequestBody) -> Result<Value, LLMError> {
     let mut value = serde_json::to_value(body)?;
     if let Some(object) = value.as_object_mut() {
         if let Some(tokens) = object.remove("max_tokens") {
             object.insert("max_completion_tokens".to_string(), tokens);
         }
+    }
+    Ok(value)
+}
+
+fn body_without_temperature(body: &OpenAIRequestBody) -> Result<Value, LLMError> {
+    let mut value = serde_json::to_value(body)?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("temperature");
     }
     Ok(value)
 }
@@ -359,6 +364,14 @@ impl LLMProvider for OpenAI {
             let text = response.text().await?;
             if should_retry_with_completion_tokens(status, &text) {
                 let fallback_body = body_with_max_completion_tokens(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if should_retry_without_temperature(status, &text) {
+                let fallback_body = body_without_temperature(&body)?;
                 response = self
                     .with_default_headers(self.client.post(self.endpoint("chat/completions")))
                     .json(&fallback_body)
@@ -435,6 +448,16 @@ impl LLMProvider for OpenAI {
             let text = response.text().await?;
             if should_retry_with_completion_tokens(status, &text) {
                 let fallback_body = body_with_max_completion_tokens(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .header("Accept", "text/event-stream")
+                    .header("Cache-Control", "no-cache")
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if should_retry_without_temperature(status, &text) {
+                let fallback_body = body_without_temperature(&body)?;
                 response = self
                     .with_default_headers(self.client.post(self.endpoint("chat/completions")))
                     .header("Accept", "text/event-stream")
