@@ -3,7 +3,7 @@ use std::{env, time::Duration};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::{multipart::Form, Client, RequestBuilder};
+use reqwest::{multipart::Form, Client, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -126,7 +126,7 @@ impl OpenAI {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct OpenAIRequestBody {
     model: String,
     messages: Vec<ChatMessage>,
@@ -303,6 +303,22 @@ struct OpenAIEmbedding {
     index: usize,
 }
 
+fn should_retry_with_completion_tokens(status: StatusCode, text: &str) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && text.contains("max_tokens")
+        && text.contains("max_completion_tokens")
+}
+
+fn body_with_max_completion_tokens(body: &OpenAIRequestBody) -> Result<Value, LLMError> {
+    let mut value = serde_json::to_value(body)?;
+    if let Some(object) = value.as_object_mut() {
+        if let Some(tokens) = object.remove("max_tokens") {
+            object.insert("max_completion_tokens".to_string(), tokens);
+        }
+    }
+    Ok(value)
+}
+
 #[async_trait]
 impl LLMProvider for OpenAI {
     async fn complete(
@@ -336,8 +352,25 @@ impl LLMProvider for OpenAI {
             .with_default_headers(self.client.post(self.endpoint("chat/completions")))
             .json(&body);
 
-        let response = builder.send().await?;
-        let status = response.status();
+        let mut response = builder.send().await?;
+        let mut status = response.status();
+
+        if !status.is_success() {
+            let text = response.text().await?;
+            if should_retry_with_completion_tokens(status, &text) {
+                let fallback_body = body_with_max_completion_tokens(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if let Ok(error) = serde_json::from_str::<OpenAIErrorEnvelope>(&text) {
+                return Err(LLMError::Provider(error.error.message));
+            } else {
+                return Err(LLMError::Provider(format!("unexpected status {status}: {text}")));
+            }
+        }
 
         if !status.is_success() {
             let text = response.text().await?;
@@ -395,8 +428,27 @@ impl LLMProvider for OpenAI {
             .header("Cache-Control", "no-cache")
             .json(&body);
 
-        let response = builder.send().await?;
-        let status = response.status();
+        let mut response = builder.send().await?;
+        let mut status = response.status();
+
+        if !status.is_success() {
+            let text = response.text().await?;
+            if should_retry_with_completion_tokens(status, &text) {
+                let fallback_body = body_with_max_completion_tokens(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .header("Accept", "text/event-stream")
+                    .header("Cache-Control", "no-cache")
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if let Ok(error) = serde_json::from_str::<OpenAIErrorEnvelope>(&text) {
+                return Err(LLMError::Provider(error.error.message));
+            } else {
+                return Err(LLMError::Provider(format!("unexpected status {status}: {text}")));
+            }
+        }
 
         if !status.is_success() {
             let text = response.text().await?;
