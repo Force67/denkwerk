@@ -5,7 +5,21 @@ use std::pin::Pin;
 
 use crate::functions::{FunctionRegistry, Tool, ToolCall, ToolChoice};
 
-pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, crate::LLMError>> + Send>>;
+/// Controls the reasoning effort for models that support extended thinking.
+///
+/// Maps to provider-specific parameters:
+/// - **OpenAI / Azure**: `reasoning_effort` field (`"low"`, `"medium"`, `"high"`)
+/// - **OpenRouter**: `reasoning` object with `effort` field
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+pub type CompletionStream =
+    Pin<Box<dyn Stream<Item = Result<StreamEvent, crate::LLMError>> + Send>>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -106,6 +120,9 @@ pub struct CompletionRequest {
     pub tools: Vec<Tool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// Optional reasoning effort level for models that support extended thinking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl CompletionRequest {
@@ -119,6 +136,7 @@ impl CompletionRequest {
             response_format: None,
             tools: Vec::new(),
             tool_choice: None,
+            reasoning_effort: None,
         }
     }
 
@@ -162,6 +180,11 @@ impl CompletionRequest {
 
     pub fn with_function_registry(mut self, registry: &FunctionRegistry) -> Self {
         self.tools.extend(registry.tools());
+        self
+    }
+
+    pub fn with_reasoning_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.reasoning_effort = Some(effort);
         self
     }
 }
@@ -366,7 +389,8 @@ mod tests {
 
     #[test]
     fn embedding_request_sets_dimensions_via_builder() {
-        let request = EmbeddingRequest::new("model", vec!["input".to_string()]).with_dimensions(1536);
+        let request =
+            EmbeddingRequest::new("model", vec!["input".to_string()]).with_dimensions(1536);
 
         assert_eq!(request.dimensions, Some(1536));
     }

@@ -13,7 +13,8 @@ use crate::{
     functions::{FunctionCall, Tool, ToolCall, ToolChoice},
     types::{
         ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, MessageRole,
-        ProviderCapabilities, ReasoningTrace, StreamEvent, TokenUsage, EmbeddingRequest, EmbeddingResponse,
+        ProviderCapabilities, ReasoningTrace, ReasoningEffort, StreamEvent, TokenUsage,
+        EmbeddingRequest, EmbeddingResponse,
     },
 };
 
@@ -129,6 +130,8 @@ struct AzureChatRequestBody {
     tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl AzureChatRequestBody {
@@ -142,6 +145,7 @@ impl AzureChatRequestBody {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort,
         } = request;
 
         Self {
@@ -154,6 +158,7 @@ impl AzureChatRequestBody {
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             stream,
+            reasoning_effort,
         }
     }
 }

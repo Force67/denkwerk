@@ -13,8 +13,8 @@ use crate::{
     functions::{FunctionCall, Tool, ToolCall, ToolChoice},
     types::{
         ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
-        ImageUploadResponse, MessageRole, ProviderCapabilities, ReasoningTrace, StreamEvent,
-        TokenUsage, EmbeddingRequest, EmbeddingResponse,
+        ImageUploadResponse, MessageRole, ProviderCapabilities, ReasoningTrace, ReasoningEffort,
+        StreamEvent, TokenUsage, EmbeddingRequest, EmbeddingResponse,
     },
 };
 
@@ -126,10 +126,51 @@ impl OpenAI {
     }
 }
 
+/// Convert a `ChatMessage` to a JSON `Value`, building a multimodal content
+/// array when the message carries image attachments.
+fn chat_message_to_json(msg: &ChatMessage) -> Value {
+    if msg.images.is_empty() {
+        // Fast path: normal text-only message.
+        return serde_json::to_value(msg).unwrap_or_default();
+    }
+
+    // Build multimodal content array: text block + image blocks.
+    let mut content_parts: Vec<Value> = Vec::with_capacity(1 + msg.images.len());
+    if let Some(text) = &msg.content {
+        content_parts.push(serde_json::json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+    for image_url in &msg.images {
+        content_parts.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": image_url },
+        }));
+    }
+
+    let mut obj = serde_json::json!({
+        "role": msg.role,
+        "content": content_parts,
+    });
+
+    if let Some(name) = &msg.name {
+        obj["name"] = serde_json::json!(name);
+    }
+    if let Some(tool_call_id) = &msg.tool_call_id {
+        obj["tool_call_id"] = serde_json::json!(tool_call_id);
+    }
+    if !msg.tool_calls.is_empty() {
+        obj["tool_calls"] = serde_json::to_value(&msg.tool_calls).unwrap_or_default();
+    }
+
+    obj
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct OpenAIRequestBody {
     model: String,
-    messages: Vec<ChatMessage>,
+    messages: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,6 +185,8 @@ struct OpenAIRequestBody {
     tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,11 +382,12 @@ impl LLMProvider for OpenAI {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort,
         } = request;
 
         let body = OpenAIRequestBody {
             model,
-            messages,
+            messages: messages.iter().map(chat_message_to_json).collect(),
             max_tokens,
             temperature,
             top_p,
@@ -351,6 +395,7 @@ impl LLMProvider for OpenAI {
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             stream: None,
+            reasoning_effort,
         };
 
         let builder = self
@@ -421,11 +466,12 @@ impl LLMProvider for OpenAI {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort,
         } = request;
 
         let body = OpenAIRequestBody {
             model,
-            messages,
+            messages: messages.iter().map(chat_message_to_json).collect(),
             max_tokens,
             temperature,
             top_p,
@@ -433,6 +479,7 @@ impl LLMProvider for OpenAI {
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             stream: Some(true),
+            reasoning_effort,
         };
 
         let builder = self

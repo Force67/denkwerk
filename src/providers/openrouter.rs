@@ -15,9 +15,9 @@ use crate::{
     functions::{Tool, ToolChoice},
     types::{
         ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
-        ImageUploadResponse, ProviderCapabilities, ReasoningTrace, StreamEvent, TokenUsage,
-        EmbeddingRequest, EmbeddingResponse, ModelInfo, ModelPricing, ModelCapabilities,
-        ReasoningConfig,
+        ImageUploadResponse, ProviderCapabilities, ReasoningTrace, ReasoningEffort, StreamEvent,
+        TokenUsage, EmbeddingRequest, EmbeddingResponse, ModelInfo, ModelPricing,
+        ModelCapabilities, ReasoningConfig,
     },
 };
 
@@ -164,6 +164,8 @@ struct OpenRouterRequestBody {
     tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Convert a `ChatMessage` to a JSON `Value`, building a multimodal content
@@ -529,6 +531,7 @@ impl LLMProvider for OpenRouter {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort,
         } = request;
 
         let body = OpenRouterRequestBody {
@@ -541,6 +544,7 @@ impl LLMProvider for OpenRouter {
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             stream: None,
+            reasoning_effort,
         };
 
         let builder = self
@@ -622,6 +626,7 @@ impl LLMProvider for OpenRouter {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort,
         } = request;
 
         let body = OpenRouterRequestBody {
@@ -634,6 +639,7 @@ impl LLMProvider for OpenRouter {
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             stream: Some(true),
+            reasoning_effort,
         };
 
         let builder = self

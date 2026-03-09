@@ -16,9 +16,9 @@ pub use error::LLMError;
 pub use providers::LLMProvider;
 pub use types::{
     ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
-    ImageUploadResponse, MessageRole, ProviderCapabilities, ReasoningTrace, StreamEvent, TokenUsage,
-    EmbeddingRequest, EmbeddingResponse, Embedding, EmbeddingUsage, ModelInfo, ModelPricing,
-    ModelCapabilities, ReasoningConfig,
+    ImageUploadResponse, MessageRole, ProviderCapabilities, ReasoningEffort, ReasoningTrace,
+    StreamEvent, TokenUsage, EmbeddingRequest, EmbeddingResponse, Embedding, EmbeddingUsage,
+    ModelInfo, ModelPricing, ModelCapabilities, ReasoningConfig,
 };
 pub use functions::{
     DynKernelFunction, FunctionCall, FunctionDefinition, FunctionRegistry, Tool, ToolCall,
