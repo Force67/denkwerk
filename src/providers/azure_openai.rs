@@ -342,8 +342,22 @@ impl LLMProvider for AzureOpenAI {
             .next()
             .ok_or(LLMError::InvalidResponse("response did not contain any choices"))?;
 
+        let mut msg = choice.message;
+
+        // Some providers (e.g. Kimi K2) embed tool calls as special tokens in the content
+        // instead of the structured tool_calls field. Parse those out.
+        if msg.tool_calls.is_empty() {
+            if let Some(content) = &msg.content {
+                let (text_calls, cleaned) = super::parse_text_tool_calls(content);
+                if !text_calls.is_empty() {
+                    msg.tool_calls = text_calls;
+                    msg.content = if cleaned.is_empty() { None } else { Some(cleaned) };
+                }
+            }
+        }
+
         Ok(CompletionResponse {
-            message: choice.message,
+            message: msg,
             usage: parsed.usage,
             reasoning: None,
         })
@@ -403,17 +417,28 @@ impl LLMProvider for AzureOpenAI {
                             }])
                         };
 
-                        let resolved_tool_calls: Vec<ToolCall> = tool_call_accumulators
+                        let mut resolved_tool_calls: Vec<ToolCall> = tool_call_accumulators
                             .clone()
                             .into_iter()
                             .map(|builder| builder.build())
                             .collect::<Result<_, _>>()?;
 
-                        let content = if message.is_empty() {
+                        let mut content = if message.is_empty() {
                             None
                         } else {
                             Some(message.clone())
                         };
+
+                        // Parse text-embedded tool calls (e.g. Kimi K2 format)
+                        if resolved_tool_calls.is_empty() {
+                            if let Some(text) = &content {
+                                let (text_calls, cleaned) = super::parse_text_tool_calls(text);
+                                if !text_calls.is_empty() {
+                                    resolved_tool_calls = text_calls;
+                                    content = if cleaned.is_empty() { None } else { Some(cleaned) };
+                                }
+                            }
+                        }
 
                         let completion_message = ChatMessage {
                             role: MessageRole::Assistant,
