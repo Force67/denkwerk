@@ -39,7 +39,7 @@ pub struct ChatMessage {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::providers::deserialize_null_as_empty_vec")]
     pub tool_calls: Vec<ToolCall>,
     /// Optional image data URLs (e.g. `data:image/jpeg;base64,...`) for multimodal messages.
     /// Skipped during normal serde; the provider serializer handles these specially.

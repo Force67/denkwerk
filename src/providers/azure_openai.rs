@@ -165,6 +165,7 @@ impl AzureChatRequestBody {
 
 #[derive(Debug, Deserialize)]
 struct AzureChatResponse {
+    #[serde(default)]
     choices: Vec<AzureResponseChoice>,
     usage: Option<TokenUsage>,
 }

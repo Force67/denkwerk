@@ -217,6 +217,7 @@ struct OpenRouterChoice {
 
 #[derive(Debug, Deserialize)]
 struct OpenRouterResponseBody {
+    #[serde(default)]
     choices: Vec<OpenRouterChoice>,
     usage: Option<TokenUsage>,
 }
@@ -606,8 +607,21 @@ impl LLMProvider for OpenRouter {
             .next()
             .ok_or(LLMError::InvalidResponse("response did not contain any choices"))?;
 
+        let mut msg = choice.message;
+
+        // Some providers (e.g. Kimi K2) embed tool calls as special tokens in the content.
+        if msg.tool_calls.is_empty() {
+            if let Some(content) = &msg.content {
+                let (text_calls, cleaned) = super::parse_text_tool_calls(content);
+                if !text_calls.is_empty() {
+                    msg.tool_calls = text_calls;
+                    msg.content = if cleaned.is_empty() { None } else { Some(cleaned) };
+                }
+            }
+        }
+
         Ok(CompletionResponse {
-            message: choice.message,
+            message: msg,
             usage: parsed.usage,
             reasoning: None,
         })
@@ -735,8 +749,27 @@ impl LLMProvider for OpenRouter {
                             }])
                         };
 
+                        // Parse text-embedded tool calls (e.g. Kimi K2 format)
+                        let mut tool_calls = Vec::new();
+                        let final_content;
+                        if !message.is_empty() {
+                            let (text_calls, cleaned) = super::parse_text_tool_calls(&message);
+                            if !text_calls.is_empty() {
+                                tool_calls = text_calls;
+                                final_content = if cleaned.is_empty() { None } else { Some(cleaned) };
+                            } else {
+                                final_content = Some(message.clone());
+                            }
+                        } else {
+                            final_content = None;
+                        }
+
+                        let mut msg = ChatMessage::assistant(final_content.as_deref().unwrap_or_default());
+                        msg.content = final_content;
+                        msg.tool_calls = tool_calls;
+
                         let completion = CompletionResponse {
-                            message: ChatMessage::assistant(message.clone()),
+                            message: msg,
                             usage: usage.clone(),
                             reasoning,
                         };
