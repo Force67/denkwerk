@@ -110,10 +110,51 @@ impl AzureOpenAI {
     }
 }
 
+/// Convert a `ChatMessage` to a JSON `Value`, building a multimodal content
+/// array when the message carries image attachments.
+fn chat_message_to_json(msg: &ChatMessage) -> Value {
+    if msg.images.is_empty() {
+        // Fast path: normal text-only message.
+        return serde_json::to_value(msg).unwrap_or_default();
+    }
+
+    // Build multimodal content array: text block + image blocks.
+    let mut content_parts: Vec<Value> = Vec::with_capacity(1 + msg.images.len());
+    if let Some(text) = &msg.content {
+        content_parts.push(serde_json::json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+    for image_url in &msg.images {
+        content_parts.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": image_url },
+        }));
+    }
+
+    let mut obj = serde_json::json!({
+        "role": msg.role,
+        "content": content_parts,
+    });
+
+    if let Some(name) = &msg.name {
+        obj["name"] = serde_json::json!(name);
+    }
+    if let Some(tool_call_id) = &msg.tool_call_id {
+        obj["tool_call_id"] = serde_json::json!(tool_call_id);
+    }
+    if !msg.tool_calls.is_empty() {
+        obj["tool_calls"] = serde_json::to_value(&msg.tool_calls).unwrap_or_default();
+    }
+
+    obj
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct AzureChatRequestBody {
     model: String,
-    messages: Vec<ChatMessage>,
+    messages: Vec<Value>,
     /// Always use `max_completion_tokens` — it supersedes the deprecated `max_tokens`
     /// and works with all models including reasoning ones (o1, o4-mini, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -150,7 +191,7 @@ impl AzureChatRequestBody {
 
         Self {
             model,
-            messages,
+            messages: messages.iter().map(chat_message_to_json).collect(),
             max_completion_tokens: max_tokens,
             temperature,
             top_p,
@@ -568,7 +609,7 @@ impl LLMProvider for AzureOpenAI {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(true, true, false, true)
+        ProviderCapabilities::new(true, true, true, true)
     }
 
     fn name(&self) -> &'static str {
