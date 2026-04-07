@@ -319,6 +319,7 @@ impl LLMProvider for Ollama {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort: _,
         } = request;
 
         let body = OllamaRequestBody {
@@ -393,6 +394,7 @@ impl LLMProvider for Ollama {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort: _,
         } = request;
 
         let body = OllamaRequestBody {

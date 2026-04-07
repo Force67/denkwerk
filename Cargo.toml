@@ -5,6 +5,11 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Lightweight primitives for building LLM powered Rust applications"
 readme = "README.md"
+autobins = false
+
+[features]
+default = []
+gui = ["dep:iced", "dep:iced_futures"]
 
 [dependencies]
 async-stream = "0.3"
@@ -27,8 +32,8 @@ clap = { version = "4.0", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde_yaml = "0.9"
 jsonschema = "0.17"
-iced = { version = "0.12", features = ["canvas", "tokio"] }
-iced_futures = "0.12"
+iced = { version = "0.12", features = ["canvas", "tokio"], optional = true }
+iced_futures = { version = "0.12", optional = true }
 libloading = "0.8"
 axum = "0.8.7"
 tower-http = { version = "0.6.7", features = ["cors", "trace"] }
@@ -38,6 +43,19 @@ tracing = "0.1.43"
 [[bin]]
 name = "handoff-eval"
 path = "src/bin/handoff-eval.rs"
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "bench-tool-adherence"
+path = "src/bin/bench-tool-adherence.rs"
+
+[[bin]]
+name = "flow_editor"
+path = "src/bin/flow_editor.rs"
+required-features = ["gui"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

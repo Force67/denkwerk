@@ -3,7 +3,7 @@ use std::{env, time::Duration};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::{multipart::Form, Client, RequestBuilder};
+use reqwest::{multipart::Form, Client, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -13,8 +13,8 @@ use crate::{
     functions::{FunctionCall, Tool, ToolCall, ToolChoice},
     types::{
         ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
-        ImageUploadResponse, MessageRole, ProviderCapabilities, ReasoningTrace, StreamEvent,
-        TokenUsage, EmbeddingRequest, EmbeddingResponse,
+        ImageUploadResponse, MessageRole, ProviderCapabilities, ReasoningTrace, ReasoningEffort,
+        StreamEvent, TokenUsage, EmbeddingRequest, EmbeddingResponse,
     },
 };
 
@@ -126,10 +126,51 @@ impl OpenAI {
     }
 }
 
-#[derive(Debug, Serialize)]
+/// Convert a `ChatMessage` to a JSON `Value`, building a multimodal content
+/// array when the message carries image attachments.
+fn chat_message_to_json(msg: &ChatMessage) -> Value {
+    if msg.images.is_empty() {
+        // Fast path: normal text-only message.
+        return serde_json::to_value(msg).unwrap_or_default();
+    }
+
+    // Build multimodal content array: text block + image blocks.
+    let mut content_parts: Vec<Value> = Vec::with_capacity(1 + msg.images.len());
+    if let Some(text) = &msg.content {
+        content_parts.push(serde_json::json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+    for image_url in &msg.images {
+        content_parts.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": image_url },
+        }));
+    }
+
+    let mut obj = serde_json::json!({
+        "role": msg.role,
+        "content": content_parts,
+    });
+
+    if let Some(name) = &msg.name {
+        obj["name"] = serde_json::json!(name);
+    }
+    if let Some(tool_call_id) = &msg.tool_call_id {
+        obj["tool_call_id"] = serde_json::json!(tool_call_id);
+    }
+    if !msg.tool_calls.is_empty() {
+        obj["tool_calls"] = serde_json::to_value(&msg.tool_calls).unwrap_or_default();
+    }
+
+    obj
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct OpenAIRequestBody {
     model: String,
-    messages: Vec<ChatMessage>,
+    messages: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,10 +185,13 @@ struct OpenAIRequestBody {
     tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {
+    #[serde(default)]
     choices: Vec<ResponseChoice>,
     usage: Option<TokenUsage>,
 }
@@ -175,21 +219,12 @@ struct ChatCompletionChunkChoice {
 
 #[derive(Debug, Default, Deserialize)]
 struct ChunkDelta {
-    #[serde(default)]
-    content: Vec<ChunkContent>,
-    #[serde(default)]
-    reasoning: Vec<ChunkContent>,
+    #[serde(default, deserialize_with = "super::deserialize_content_blocks")]
+    content: Vec<super::StreamContentBlock>,
+    #[serde(default, deserialize_with = "super::deserialize_content_blocks")]
+    reasoning: Vec<super::StreamContentBlock>,
     #[serde(default)]
     tool_calls: Vec<ChunkToolCall>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ChunkContent {
-    #[serde(rename = "type")]
-    #[serde(default)]
-    _kind: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -303,6 +338,36 @@ struct OpenAIEmbedding {
     index: usize,
 }
 
+fn should_retry_with_completion_tokens(status: StatusCode, text: &str) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && text.contains("max_tokens")
+        && text.contains("max_completion_tokens")
+}
+
+fn should_retry_without_temperature(status: StatusCode, text: &str) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && text.contains("temperature")
+        && (text.contains("Unsupported value") || text.contains("Only the default"))
+}
+
+fn body_with_max_completion_tokens(body: &OpenAIRequestBody) -> Result<Value, LLMError> {
+    let mut value = serde_json::to_value(body)?;
+    if let Some(object) = value.as_object_mut() {
+        if let Some(tokens) = object.remove("max_tokens") {
+            object.insert("max_completion_tokens".to_string(), tokens);
+        }
+    }
+    Ok(value)
+}
+
+fn body_without_temperature(body: &OpenAIRequestBody) -> Result<Value, LLMError> {
+    let mut value = serde_json::to_value(body)?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("temperature");
+    }
+    Ok(value)
+}
+
 #[async_trait]
 impl LLMProvider for OpenAI {
     async fn complete(
@@ -318,11 +383,12 @@ impl LLMProvider for OpenAI {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort,
         } = request;
 
         let body = OpenAIRequestBody {
             model,
-            messages,
+            messages: messages.iter().map(chat_message_to_json).collect(),
             max_tokens,
             temperature,
             top_p,
@@ -330,14 +396,40 @@ impl LLMProvider for OpenAI {
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             stream: None,
+            reasoning_effort,
         };
 
         let builder = self
             .with_default_headers(self.client.post(self.endpoint("chat/completions")))
             .json(&body);
 
-        let response = builder.send().await?;
-        let status = response.status();
+        let mut response = builder.send().await?;
+        let mut status = response.status();
+
+        if !status.is_success() {
+            let text = response.text().await?;
+            if should_retry_with_completion_tokens(status, &text) {
+                let fallback_body = body_with_max_completion_tokens(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if should_retry_without_temperature(status, &text) {
+                let fallback_body = body_without_temperature(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if let Ok(error) = serde_json::from_str::<OpenAIErrorEnvelope>(&text) {
+                return Err(LLMError::Provider(error.error.message));
+            } else {
+                return Err(LLMError::Provider(format!("unexpected status {status}: {text}")));
+            }
+        }
 
         if !status.is_success() {
             let text = response.text().await?;
@@ -355,8 +447,22 @@ impl LLMProvider for OpenAI {
             .next()
             .ok_or(LLMError::InvalidResponse("response did not contain any choices"))?;
 
+        let mut msg = choice.message;
+
+        // Some providers (e.g. Kimi K2) embed tool calls as special tokens in the content
+        // instead of the structured tool_calls field. Parse those out.
+        if msg.tool_calls.is_empty() {
+            if let Some(content) = &msg.content {
+                let (text_calls, cleaned) = super::parse_text_tool_calls(content);
+                if !text_calls.is_empty() {
+                    msg.tool_calls = text_calls;
+                    msg.content = if cleaned.is_empty() { None } else { Some(cleaned) };
+                }
+            }
+        }
+
         Ok(CompletionResponse {
-            message: choice.message,
+            message: msg,
             usage: parsed.usage,
             reasoning: None,
         })
@@ -375,11 +481,12 @@ impl LLMProvider for OpenAI {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort,
         } = request;
 
         let body = OpenAIRequestBody {
             model,
-            messages,
+            messages: messages.iter().map(chat_message_to_json).collect(),
             max_tokens,
             temperature,
             top_p,
@@ -387,6 +494,7 @@ impl LLMProvider for OpenAI {
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             stream: Some(true),
+            reasoning_effort,
         };
 
         let builder = self
@@ -395,8 +503,37 @@ impl LLMProvider for OpenAI {
             .header("Cache-Control", "no-cache")
             .json(&body);
 
-        let response = builder.send().await?;
-        let status = response.status();
+        let mut response = builder.send().await?;
+        let mut status = response.status();
+
+        if !status.is_success() {
+            let text = response.text().await?;
+            if should_retry_with_completion_tokens(status, &text) {
+                let fallback_body = body_with_max_completion_tokens(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .header("Accept", "text/event-stream")
+                    .header("Cache-Control", "no-cache")
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if should_retry_without_temperature(status, &text) {
+                let fallback_body = body_without_temperature(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .header("Accept", "text/event-stream")
+                    .header("Cache-Control", "no-cache")
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if let Ok(error) = serde_json::from_str::<OpenAIErrorEnvelope>(&text) {
+                return Err(LLMError::Provider(error.error.message));
+            } else {
+                return Err(LLMError::Provider(format!("unexpected status {status}: {text}")));
+            }
+        }
 
         if !status.is_success() {
             let text = response.text().await?;
@@ -443,17 +580,28 @@ impl LLMProvider for OpenAI {
                             }])
                         };
 
-                        let resolved_tool_calls: Vec<ToolCall> = tool_call_accumulators
+                        let mut resolved_tool_calls: Vec<ToolCall> = tool_call_accumulators
                             .clone()
                             .into_iter()
                             .map(|builder| builder.build())
                             .collect::<Result<_, _>>()?;
 
-                        let content = if message.is_empty() {
+                        let mut content = if message.is_empty() {
                             None
                         } else {
                             Some(message.clone())
                         };
+
+                        // Parse text-embedded tool calls (e.g. Kimi K2 format)
+                        if resolved_tool_calls.is_empty() {
+                            if let Some(ref text) = content {
+                                let (text_calls, cleaned) = super::parse_text_tool_calls(text);
+                                if !text_calls.is_empty() {
+                                    resolved_tool_calls = text_calls;
+                                    content = if cleaned.is_empty() { None } else { Some(cleaned) };
+                                }
+                            }
+                        }
 
                         let completion_message = ChatMessage {
                             role: MessageRole::Assistant,

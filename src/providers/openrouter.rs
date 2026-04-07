@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::{multipart::Form, Client, RequestBuilder};
+use reqwest::{multipart::Form, Client, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -15,9 +15,9 @@ use crate::{
     functions::{Tool, ToolChoice},
     types::{
         ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
-        ImageUploadResponse, ProviderCapabilities, ReasoningTrace, StreamEvent, TokenUsage,
-        EmbeddingRequest, EmbeddingResponse, ModelInfo, ModelPricing, ModelCapabilities,
-        ReasoningConfig,
+        ImageUploadResponse, ProviderCapabilities, ReasoningTrace, ReasoningEffort, StreamEvent,
+        TokenUsage, EmbeddingRequest, EmbeddingResponse, ModelInfo, ModelPricing,
+        ModelCapabilities, ReasoningConfig,
     },
 };
 
@@ -146,7 +146,7 @@ impl OpenRouter {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct OpenRouterRequestBody {
     model: String,
     messages: Vec<Value>,
@@ -164,6 +164,8 @@ struct OpenRouterRequestBody {
     tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Convert a `ChatMessage` to a JSON `Value`, building a multimodal content
@@ -215,6 +217,7 @@ struct OpenRouterChoice {
 
 #[derive(Debug, Deserialize)]
 struct OpenRouterResponseBody {
+    #[serde(default)]
     choices: Vec<OpenRouterChoice>,
     usage: Option<OpenRouterUsage>,
 }
@@ -283,19 +286,10 @@ struct OpenRouterStreamChoice {
 
 #[derive(Debug, Default, Deserialize)]
 struct OpenRouterStreamDelta {
-    #[serde(default)]
-    content: Vec<OpenRouterStreamContent>,
-    #[serde(default)]
-    reasoning: Vec<OpenRouterStreamContent>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct OpenRouterStreamContent {
-    #[serde(rename = "type")]
-    #[serde(default)]
-    _kind: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
+    #[serde(default, deserialize_with = "super::deserialize_content_blocks")]
+    content: Vec<super::StreamContentBlock>,
+    #[serde(default, deserialize_with = "super::deserialize_content_blocks")]
+    reasoning: Vec<super::StreamContentBlock>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -337,6 +331,36 @@ struct OpenRouterCatalogModel {
     reasoning_config: Option<OpenRouterReasoningConfig>,
     #[serde(default)]
     features: Option<OpenRouterModelFeatures>,
+}
+
+fn should_retry_with_completion_tokens(status: StatusCode, text: &str) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && text.contains("max_tokens")
+        && text.contains("max_completion_tokens")
+}
+
+fn should_retry_without_temperature(status: StatusCode, text: &str) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && text.contains("temperature")
+        && (text.contains("Unsupported value") || text.contains("Only the default"))
+}
+
+fn body_with_max_completion_tokens(body: &OpenRouterRequestBody) -> Result<Value, LLMError> {
+    let mut value = serde_json::to_value(body)?;
+    if let Some(object) = value.as_object_mut() {
+        if let Some(tokens) = object.remove("max_tokens") {
+            object.insert("max_completion_tokens".to_string(), tokens);
+        }
+    }
+    Ok(value)
+}
+
+fn body_without_temperature(body: &OpenRouterRequestBody) -> Result<Value, LLMError> {
+    let mut value = serde_json::to_value(body)?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("temperature");
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -523,6 +547,7 @@ impl LLMProvider for OpenRouter {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort,
         } = request;
 
         let body = OpenRouterRequestBody {
@@ -535,14 +560,47 @@ impl LLMProvider for OpenRouter {
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             stream: None,
+            reasoning_effort,
         };
 
         let builder = self
             .with_default_headers(self.client.post(self.endpoint("chat/completions")))
             .json(&body);
 
-        let response = builder.send().await?;
-        let status = response.status();
+        let mut response = builder.send().await?;
+        let mut status = response.status();
+
+        if !status.is_success() {
+            let text = response.text().await?;
+            if should_retry_with_completion_tokens(status, &text) {
+                let fallback_body = body_with_max_completion_tokens(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if should_retry_without_temperature(status, &text) {
+                let fallback_body = body_without_temperature(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if let Ok(error_body) = serde_json::from_str::<OpenRouterErrorBody>(&text) {
+                if let Some(error) = error_body.error {
+                    return Err(LLMError::Provider(error.message));
+                }
+                return Err(LLMError::Provider(format!(
+                    "unexpected status {status}: {text}"
+                )));
+            } else {
+                return Err(LLMError::Provider(format!(
+                    "unexpected status {status}: {text}"
+                )));
+            }
+        }
 
         if !status.is_success() {
             let text = response.text().await?;
@@ -564,17 +622,28 @@ impl LLMProvider for OpenRouter {
             .next()
             .ok_or(LLMError::InvalidResponse("response did not contain any choices"))?;
 
+        let mut msg = choice.message;
+
+        // Some providers (e.g. Kimi K2) embed tool calls as special tokens in the content.
+        if msg.tool_calls.is_empty() {
+            if let Some(content) = &msg.content {
+                let (text_calls, cleaned) = super::parse_text_tool_calls(content);
+                if !text_calls.is_empty() {
+                    msg.tool_calls = text_calls;
+                    msg.content = if cleaned.is_empty() { None } else { Some(cleaned) };
+                }
+            }
+        }
+
         let usage = parsed.usage.map(|u| TokenUsage {
             prompt_tokens: u.prompt_tokens,
             completion_tokens: u.completion_tokens,
             total_tokens: u.total_tokens,
-            cached_tokens: u
-                .prompt_tokens_details
-                .and_then(|d| d.cached_tokens),
+            cached_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
         });
 
         Ok(CompletionResponse {
-            message: choice.message,
+            message: msg,
             usage,
             reasoning: None,
         })
@@ -593,6 +662,7 @@ impl LLMProvider for OpenRouter {
             response_format,
             tools,
             tool_choice,
+            reasoning_effort,
         } = request;
 
         let body = OpenRouterRequestBody {
@@ -605,6 +675,7 @@ impl LLMProvider for OpenRouter {
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             stream: Some(true),
+            reasoning_effort,
         };
 
         let builder = self
@@ -613,8 +684,44 @@ impl LLMProvider for OpenRouter {
             .header("Cache-Control", "no-cache")
             .json(&body);
 
-        let response = builder.send().await?;
-        let status = response.status();
+        let mut response = builder.send().await?;
+        let mut status = response.status();
+
+        if !status.is_success() {
+            let text = response.text().await?;
+            if should_retry_with_completion_tokens(status, &text) {
+                let fallback_body = body_with_max_completion_tokens(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .header("Accept", "text/event-stream")
+                    .header("Cache-Control", "no-cache")
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if should_retry_without_temperature(status, &text) {
+                let fallback_body = body_without_temperature(&body)?;
+                response = self
+                    .with_default_headers(self.client.post(self.endpoint("chat/completions")))
+                    .header("Accept", "text/event-stream")
+                    .header("Cache-Control", "no-cache")
+                    .json(&fallback_body)
+                    .send()
+                    .await?;
+                status = response.status();
+            } else if let Ok(error_body) = serde_json::from_str::<OpenRouterErrorBody>(&text) {
+                if let Some(error) = error_body.error {
+                    return Err(LLMError::Provider(error.message));
+                }
+                return Err(LLMError::Provider(format!(
+                    "unexpected status {status}: {text}"
+                )));
+            } else {
+                return Err(LLMError::Provider(format!(
+                    "unexpected status {status}: {text}"
+                )));
+            }
+        }
 
         if !status.is_success() {
             let text = response.text().await?;
@@ -664,8 +771,27 @@ impl LLMProvider for OpenRouter {
                             }])
                         };
 
+                        // Parse text-embedded tool calls (e.g. Kimi K2 format)
+                        let mut tool_calls = Vec::new();
+                        let final_content;
+                        if !message.is_empty() {
+                            let (text_calls, cleaned) = super::parse_text_tool_calls(&message);
+                            if !text_calls.is_empty() {
+                                tool_calls = text_calls;
+                                final_content = if cleaned.is_empty() { None } else { Some(cleaned) };
+                            } else {
+                                final_content = Some(message.clone());
+                            }
+                        } else {
+                            final_content = None;
+                        }
+
+                        let mut msg = ChatMessage::assistant(final_content.as_deref().unwrap_or_default());
+                        msg.content = final_content;
+                        msg.tool_calls = tool_calls;
+
                         let completion = CompletionResponse {
-                            message: ChatMessage::assistant(message.clone()),
+                            message: msg,
                             usage: usage.clone(),
                             reasoning,
                         };

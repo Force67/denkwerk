@@ -13,7 +13,8 @@ use crate::{
     functions::{FunctionCall, Tool, ToolCall, ToolChoice},
     types::{
         ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, MessageRole,
-        ProviderCapabilities, ReasoningTrace, StreamEvent, TokenUsage, EmbeddingRequest, EmbeddingResponse,
+        ProviderCapabilities, ReasoningTrace, ReasoningEffort, StreamEvent, TokenUsage,
+        EmbeddingRequest, EmbeddingResponse,
     },
 };
 
@@ -109,12 +110,55 @@ impl AzureOpenAI {
     }
 }
 
-#[derive(Debug, Serialize)]
+/// Convert a `ChatMessage` to a JSON `Value`, building a multimodal content
+/// array when the message carries image attachments.
+fn chat_message_to_json(msg: &ChatMessage) -> Value {
+    if msg.images.is_empty() {
+        // Fast path: normal text-only message.
+        return serde_json::to_value(msg).unwrap_or_default();
+    }
+
+    // Build multimodal content array: text block + image blocks.
+    let mut content_parts: Vec<Value> = Vec::with_capacity(1 + msg.images.len());
+    if let Some(text) = &msg.content {
+        content_parts.push(serde_json::json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+    for image_url in &msg.images {
+        content_parts.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": image_url },
+        }));
+    }
+
+    let mut obj = serde_json::json!({
+        "role": msg.role,
+        "content": content_parts,
+    });
+
+    if let Some(name) = &msg.name {
+        obj["name"] = serde_json::json!(name);
+    }
+    if let Some(tool_call_id) = &msg.tool_call_id {
+        obj["tool_call_id"] = serde_json::json!(tool_call_id);
+    }
+    if !msg.tool_calls.is_empty() {
+        obj["tool_calls"] = serde_json::to_value(&msg.tool_calls).unwrap_or_default();
+    }
+
+    obj
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct AzureChatRequestBody {
     model: String,
-    messages: Vec<ChatMessage>,
+    messages: Vec<Value>,
+    /// Always use `max_completion_tokens` — it supersedes the deprecated `max_tokens`
+    /// and works with all models including reasoning ones (o1, o4-mini, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
+    max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,10 +171,42 @@ struct AzureChatRequestBody {
     tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
+}
+
+impl AzureChatRequestBody {
+    fn from_request(request: CompletionRequest, stream: Option<bool>) -> Self {
+        let CompletionRequest {
+            model,
+            messages,
+            max_tokens,
+            temperature,
+            top_p,
+            response_format,
+            tools,
+            tool_choice,
+            reasoning_effort,
+        } = request;
+
+        Self {
+            model,
+            messages: messages.iter().map(chat_message_to_json).collect(),
+            max_completion_tokens: max_tokens,
+            temperature,
+            top_p,
+            response_format,
+            tools: if tools.is_empty() { None } else { Some(tools) },
+            tool_choice,
+            stream,
+            reasoning_effort,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct AzureChatResponse {
+    #[serde(default)]
     choices: Vec<AzureResponseChoice>,
     usage: Option<TokenUsage>,
 }
@@ -158,21 +234,12 @@ struct AzureChatChunkChoice {
 
 #[derive(Debug, Default, Deserialize)]
 struct AzureChunkDelta {
-    #[serde(default)]
-    content: Vec<AzureChunkContent>,
-    #[serde(default)]
-    reasoning: Vec<AzureChunkContent>,
+    #[serde(default, deserialize_with = "super::deserialize_content_blocks")]
+    content: Vec<super::StreamContentBlock>,
+    #[serde(default, deserialize_with = "super::deserialize_content_blocks")]
+    reasoning: Vec<super::StreamContentBlock>,
     #[serde(default)]
     tool_calls: Vec<AzureChunkToolCall>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct AzureChunkContent {
-    #[serde(rename = "type")]
-    #[serde(default)]
-    _kind: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -277,49 +344,36 @@ struct AzureEmbedding {
     index: usize,
 }
 
+async fn parse_azure_error(response: reqwest::Response) -> LLMError {
+    let status = response.status();
+    match response.text().await {
+        Ok(text) => {
+            if let Ok(envelope) = serde_json::from_str::<AzureErrorEnvelope>(&text) {
+                LLMError::Provider(envelope.error.message)
+            } else {
+                LLMError::Provider(format!("unexpected status {status}: {text}"))
+            }
+        }
+        Err(e) => LLMError::Provider(format!("unexpected status {status}: {e}")),
+    }
+}
+
 #[async_trait]
 impl LLMProvider for AzureOpenAI {
     async fn complete(
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, LLMError> {
-        let CompletionRequest {
-            model,
-            messages,
-            max_tokens,
-            temperature,
-            top_p,
-            response_format,
-            tools,
-            tool_choice,
-        } = request;
+        let body = AzureChatRequestBody::from_request(request, None);
 
-        let body = AzureChatRequestBody {
-            model: model.clone(),
-            messages,
-            max_tokens,
-            temperature,
-            top_p,
-            response_format,
-            tools: if tools.is_empty() { None } else { Some(tools) },
-            tool_choice,
-            stream: None,
-        };
+        let response = self
+            .with_default_headers(self.client.post(self.endpoint(&body.model)))
+            .json(&body)
+            .send()
+            .await?;
 
-        let builder = self
-            .with_default_headers(self.client.post(self.endpoint(&model)))
-            .json(&body);
-
-        let response = builder.send().await?;
-        let status = response.status();
-
-        if !status.is_success() {
-            let text = response.text().await?;
-            if let Ok(error) = serde_json::from_str::<AzureErrorEnvelope>(&text) {
-                return Err(LLMError::Provider(error.error.message));
-            }
-
-            return Err(LLMError::Provider(format!("unexpected status {status}: {text}")));
+        if !response.status().is_success() {
+            return Err(parse_azure_error(response).await);
         }
 
         let parsed: AzureChatResponse = response.json().await?;
@@ -329,8 +383,22 @@ impl LLMProvider for AzureOpenAI {
             .next()
             .ok_or(LLMError::InvalidResponse("response did not contain any choices"))?;
 
+        let mut msg = choice.message;
+
+        // Some providers (e.g. Kimi K2) embed tool calls as special tokens in the content
+        // instead of the structured tool_calls field. Parse those out.
+        if msg.tool_calls.is_empty() {
+            if let Some(content) = &msg.content {
+                let (text_calls, cleaned) = super::parse_text_tool_calls(content);
+                if !text_calls.is_empty() {
+                    msg.tool_calls = text_calls;
+                    msg.content = if cleaned.is_empty() { None } else { Some(cleaned) };
+                }
+            }
+        }
+
         Ok(CompletionResponse {
-            message: choice.message,
+            message: msg,
             usage: parsed.usage,
             reasoning: None,
         })
@@ -340,45 +408,18 @@ impl LLMProvider for AzureOpenAI {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionStream, LLMError> {
-        let CompletionRequest {
-            model,
-            messages,
-            max_tokens,
-            temperature,
-            top_p,
-            response_format,
-            tools,
-            tool_choice,
-        } = request;
+        let body = AzureChatRequestBody::from_request(request, Some(true));
 
-        let body = AzureChatRequestBody {
-            model: model.clone(),
-            messages,
-            max_tokens,
-            temperature,
-            top_p,
-            response_format,
-            tools: if tools.is_empty() { None } else { Some(tools) },
-            tool_choice,
-            stream: Some(true),
-        };
-
-        let builder = self
-            .with_default_headers(self.client.post(self.endpoint(&model)))
+        let response = self
+            .with_default_headers(self.client.post(self.endpoint(&body.model)))
             .header("Accept", "text/event-stream")
             .header("Cache-Control", "no-cache")
-            .json(&body);
+            .json(&body)
+            .send()
+            .await?;
 
-        let response = builder.send().await?;
-        let status = response.status();
-
-        if !status.is_success() {
-            let text = response.text().await?;
-            if let Ok(error) = serde_json::from_str::<AzureErrorEnvelope>(&text) {
-                return Err(LLMError::Provider(error.error.message));
-            }
-
-            return Err(LLMError::Provider(format!("unexpected status {status}: {text}")));
+        if !response.status().is_success() {
+            return Err(parse_azure_error(response).await);
         }
 
         let stream = try_stream! {
@@ -417,17 +458,28 @@ impl LLMProvider for AzureOpenAI {
                             }])
                         };
 
-                        let resolved_tool_calls: Vec<ToolCall> = tool_call_accumulators
+                        let mut resolved_tool_calls: Vec<ToolCall> = tool_call_accumulators
                             .clone()
                             .into_iter()
                             .map(|builder| builder.build())
                             .collect::<Result<_, _>>()?;
 
-                        let content = if message.is_empty() {
+                        let mut content = if message.is_empty() {
                             None
                         } else {
                             Some(message.clone())
                         };
+
+                        // Parse text-embedded tool calls (e.g. Kimi K2 format)
+                        if resolved_tool_calls.is_empty() {
+                            if let Some(text) = &content {
+                                let (text_calls, cleaned) = super::parse_text_tool_calls(text);
+                                if !text_calls.is_empty() {
+                                    resolved_tool_calls = text_calls;
+                                    content = if cleaned.is_empty() { None } else { Some(cleaned) };
+                                }
+                            }
+                        }
 
                         let completion_message = ChatMessage {
                             role: MessageRole::Assistant,
@@ -557,7 +609,7 @@ impl LLMProvider for AzureOpenAI {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(true, true, false, true)
+        ProviderCapabilities::new(true, true, true, true)
     }
 
     fn name(&self) -> &'static str {
