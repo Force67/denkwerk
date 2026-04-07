@@ -216,7 +216,22 @@ struct OpenRouterChoice {
 #[derive(Debug, Deserialize)]
 struct OpenRouterResponseBody {
     choices: Vec<OpenRouterChoice>,
-    usage: Option<TokenUsage>,
+    usage: Option<OpenRouterUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenRouterPromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct OpenRouterPromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,7 +270,7 @@ struct OpenRouterStreamBody {
     #[serde(default)]
     choices: Vec<OpenRouterStreamChoice>,
     #[serde(default)]
-    usage: Option<TokenUsage>,
+    usage: Option<OpenRouterUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -549,9 +564,18 @@ impl LLMProvider for OpenRouter {
             .next()
             .ok_or(LLMError::InvalidResponse("response did not contain any choices"))?;
 
+        let usage = parsed.usage.map(|u| TokenUsage {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            total_tokens: u.total_tokens,
+            cached_tokens: u
+                .prompt_tokens_details
+                .and_then(|d| d.cached_tokens),
+        });
+
         Ok(CompletionResponse {
             message: choice.message,
-            usage: parsed.usage,
+            usage,
             reasoning: None,
         })
     }
@@ -654,7 +678,14 @@ impl LLMProvider for OpenRouter {
                     let chunk: OpenRouterStreamBody = serde_json::from_str(payload)?;
 
                     if let Some(chunk_usage) = chunk.usage {
-                        usage = Some(chunk_usage);
+                        usage = Some(TokenUsage {
+                            prompt_tokens: chunk_usage.prompt_tokens,
+                            completion_tokens: chunk_usage.completion_tokens,
+                            total_tokens: chunk_usage.total_tokens,
+                            cached_tokens: chunk_usage
+                                .prompt_tokens_details
+                                .and_then(|d| d.cached_tokens),
+                        });
                     }
 
                     for choice in chunk.choices {

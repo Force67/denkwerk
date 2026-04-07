@@ -12,8 +12,9 @@ pub mod shared_state;
 pub mod metrics;
 pub mod skills;
 
-pub use error::LLMError;
-pub use providers::LLMProvider;
+ pub use error::LLMError;
+ pub use providers::LLMProvider;
+ pub use providers::ollama::{Ollama, OllamaConfig};
 pub use types::{
     ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
     ImageUploadResponse, MessageRole, ProviderCapabilities, ReasoningTrace, StreamEvent, TokenUsage,

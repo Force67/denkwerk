@@ -24,16 +24,19 @@ impl RealisticMockProvider {
                     prompt_tokens: 150,
                     completion_tokens: 80,
                     total_tokens: 230,
+                    cached_tokens: None,
                 },
                 TokenUsage {
                     prompt_tokens: 200,
                     completion_tokens: 120,
                     total_tokens: 320,
+                    cached_tokens: Some(180),
                 },
                 TokenUsage {
                     prompt_tokens: 180,
                     completion_tokens: 100,
                     total_tokens: 280,
+                    cached_tokens: None,
                 },
             ]),
         }

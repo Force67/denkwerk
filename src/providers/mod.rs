@@ -8,6 +8,7 @@ use crate::LLMError;
 
 pub mod openai;
 pub mod openrouter;
+pub mod ollama;
 pub mod scripted;
 pub mod azure_openai;
 

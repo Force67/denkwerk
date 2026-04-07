@@ -482,6 +482,7 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 50,
             total_tokens: 150,
+            cached_tokens: None,
         };
 
         metrics.record_token_usage(&usage, 0.000001, 0.000002);
