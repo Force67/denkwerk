@@ -270,15 +270,19 @@ impl<M: GroupChatManager + 'static> GroupChatOrchestrator<M> {
                 .cloned()
                 .ok_or_else(|| AgentError::UnknownAgent(next.clone()))?;
 
+            // See `flows::prefill` — avoid the qwen3 "trailing assistant =
+            // prefill" trap that would cause rounds 2+ to return empty.
+            let effective_model = agent.model_override().unwrap_or(self.model.as_str());
+            let history = super::prefill::history_for_llm(&transcript, effective_model);
             let skill_tools = self
                 .skill_runtime
                 .as_ref()
-                .and_then(|runtime| runtime.registry_for_agent(&agent, &transcript));
+                .and_then(|runtime| runtime.registry_for_agent(&agent, history.as_ref()));
             let turn = agent
                 .execute_with_tools(
                     self.provider.as_ref(),
                     &self.model,
-                    &transcript,
+                    history.as_ref(),
                     skill_tools.as_ref(),
                     None,
                 )

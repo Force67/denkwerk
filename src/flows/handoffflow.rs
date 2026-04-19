@@ -612,15 +612,22 @@ impl<'a> HandoffSession<'a> {
                 .ok_or_else(|| AgentError::UnknownAgent(self.active_agent.clone()))?;
 
             let mut internal_tools = self.orchestrator.internal_tools();
+            // See `flows::prefill`: after a handoff the transcript ends
+            // with an assistant message; for qwen-family models we'd get an
+            // empty prefill continuation without a synthetic user turn.
+            let effective_model = agent
+                .model_override()
+                .unwrap_or(self.orchestrator.model.as_str());
+            let history = super::prefill::history_for_llm(&self.transcript, effective_model);
             if let Some(runtime) = self.orchestrator.skill_runtime.as_ref() {
-                if let Some(skill_tools) = runtime.registry_for_agent(agent, &self.transcript) {
+                if let Some(skill_tools) = runtime.registry_for_agent(agent, history.as_ref()) {
                     internal_tools.extend_from(&skill_tools);
                 }
             }
             let fut = agent.execute_with_tools(
                 self.orchestrator.provider.as_ref(),
                 &self.orchestrator.model,
-                &self.transcript,
+                history.as_ref(),
                 Some(&internal_tools),
                 Some(ToolChoice::auto()),
             );

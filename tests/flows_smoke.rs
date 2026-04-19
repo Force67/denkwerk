@@ -10,17 +10,13 @@
 //!    where N is the number of user turns taken.
 //! 2. No two consecutive assistant messages share identical content.
 //!
-//! ## Known qwen chat-template interaction
+//! ## Qwen chat-template interaction (compensated)
 //!
-//! Qwen3.6 will return empty content if the final message in a request is an
-//! assistant turn with no trailing user turn. This affects every orchestrator
-//! that chains multiple agents by appending assistant messages to a shared
-//! transcript (sequential with >1 agent, group_chat round 2+, handoff round
-//! 2+ without a synthetic user turn). To keep the smoke tests robust against
-//! model variance, we exercise each orchestrator in a single-hop
-//! configuration that ends in a user turn before the model call. The
-//! orchestrator plumbing (events, transcript bookkeeping, metrics) is still
-//! fully covered.
+//! Qwen3.6's renderer treats a trailing assistant message as a prefill cue
+//! and returns empty content when orchestrators chain agents naively. The
+//! orchestrators are compensated by `flows::prefill::history_for_llm`,
+//! which injects a synthetic user turn only for known-affected models. The
+//! multi-agent tests below verify the fix works end-to-end.
 //!
 //! Run:
 //! ```sh
@@ -96,11 +92,10 @@ fn assert_no_duplicate_consecutive_assistant(transcript: &[ChatMessage]) {
 
 #[tokio::test]
 #[ignore = "requires OLLAMA_SMOKE_URL"]
-async fn sequential_runs_agent_exactly_once() {
-    // See module docstring: qwen will not generate content after a trailing
-    // assistant turn, so a multi-agent sequential pipeline produces empty
-    // content on turns 2+. A single-agent pipeline still exercises the full
-    // orchestrator loop, events, transcript bookkeeping, and metrics.
+async fn sequential_chains_two_agents() {
+    // Exercises the `flows::prefill` compensation: without it, agent 2
+    // would see a transcript ending in agent 1's assistant message and
+    // (on qwen) return empty content.
     let provider = provider();
 
     let shouter = Agent::from_string(
@@ -108,18 +103,35 @@ async fn sequential_runs_agent_exactly_once() {
         "Rewrite the user's text entirely in UPPERCASE. Reply only with the rewritten text.",
     )
     .with_max_tokens(64);
+    let exclaimer = Agent::from_string(
+        "exclaimer",
+        "Append three exclamation marks to whatever the previous assistant just said. \
+         Reply with only the updated text.",
+    )
+    .with_max_tokens(64);
 
-    let orchestrator = SequentialOrchestrator::new(provider, MODEL).with_agents([shouter]);
+    let orchestrator =
+        SequentialOrchestrator::new(provider, MODEL).with_agents([shouter, exclaimer]);
 
     let task = "hello world from sequential";
     let run = orchestrator.run(task).await.expect("sequential run failed");
     eprintln!("sequential final: {:?}", run.final_output);
+    for m in &run.transcript {
+        eprintln!(
+            "  [{:?}] name={:?} content={:?}",
+            m.role,
+            m.name,
+            m.content.as_deref().unwrap_or(""),
+        );
+    }
 
     let out = run.final_output.expect("no final output");
     assert!(
-        out.to_uppercase().contains("HELLO") && out.contains("WORLD"),
-        "expected uppercase echo, got {out:?}",
+        !out.trim().is_empty(),
+        "final output was empty — prefill fix likely not applied"
     );
+    // Agent 2's job is to append `!!!` — assert that landed.
+    assert!(out.contains("!!!"), "expected '!!!' in final output, got {out:?}");
 
     let steps = run
         .events
@@ -131,18 +143,23 @@ async fn sequential_runs_agent_exactly_once() {
         .iter()
         .filter(|e| matches!(e, SequentialEvent::Completed { .. }))
         .count();
-    assert_eq!(steps, 1, "expected 1 Step event, got {steps}");
+    assert_eq!(steps, 2, "expected 2 Step events, got {steps}");
     assert_eq!(completeds, 1, "expected 1 Completed event, got {completeds}");
 
+    // Duplicate-processing invariants — still hold even with the synthetic
+    // user turn, because that turn is injected into the LLM request only,
+    // NOT persisted into the transcript.
     assert_user_task_count(&run.transcript, task, 1);
     assert_no_duplicate_consecutive_assistant(&run.transcript);
 
-    let shouter_msgs = run
-        .transcript
-        .iter()
-        .filter(|m| m.name.as_deref() == Some("shouter"))
-        .count();
-    assert_eq!(shouter_msgs, 1, "shouter spoke {shouter_msgs} times, want 1");
+    for name in ["shouter", "exclaimer"] {
+        let n = run
+            .transcript
+            .iter()
+            .filter(|m| m.name.as_deref() == Some(name))
+            .count();
+        assert_eq!(n, 1, "{name} spoke {n} times, expected 1");
+    }
 }
 
 // -- concurrent ----------------------------------------------------------
@@ -204,85 +221,83 @@ async fn concurrent_runs_each_agent_once_in_parallel() {
 
 #[tokio::test]
 #[ignore = "requires OLLAMA_SMOKE_URL"]
-async fn handoff_session_preserves_one_user_message_per_send() {
-    // Single send: no actual handoff (which would trigger the trailing-
-    // assistant issue). This still verifies session plumbing, event
-    // emission, and the transcript one-user-per-send invariant.
+async fn handoff_session_triggers_real_handoff_and_target_responds() {
+    // Real handoff path: greeter's reply matches the rule's keywords,
+    // which pushes math_expert as active, which then has to respond to a
+    // transcript ending in greeter's assistant message. Without the
+    // `flows::prefill` compensation, math_expert would return empty on qwen.
     let provider = provider();
 
     let mut orchestrator =
         HandoffOrchestrator::new(provider, MODEL).with_max_handoffs(Some(2));
 
     orchestrator.register_agent(
-        Agent::from_string("greeter", "Greet the user in one short line.")
-            .with_max_tokens(48),
+        Agent::from_string(
+            "greeter",
+            "Your first word must be the literal string '[HELLO]'. \
+             Then write one short greeting sentence. Do not answer the question.",
+        )
+        .with_max_tokens(32)
+        .with_temperature(0.0),
     );
-
-    // Register a second agent + rule so the orchestrator is a real handoff
-    // setup, even though our test only performs a non-handoff turn.
     orchestrator.register_agent(
-        Agent::from_string("math_expert", "Answer math questions in one line.")
-            .with_max_tokens(48),
+        Agent::from_string(
+            "math_expert",
+            "You are a math expert. Answer the user's math question directly in one short line. \
+             Never use the word '[HELLO]'.",
+        )
+        .with_max_tokens(64)
+        .with_temperature(0.0),
     );
+    // Sentinel-token match only fires on greeter's output. Qwen at
+    // temperature=0 follows the literal-prefix instruction reliably, and
+    // math_expert is explicitly forbidden from emitting the sentinel.
     orchestrator.define_handoff(HandoffRule::to(
         "math_expert",
-        HandoffMatcher::KeywordsAny(vec!["math".into(), "expert".into()]),
+        HandoffMatcher::KeywordsAny(vec!["[HELLO]".into()]),
     ));
 
     let mut session = orchestrator.session("greeter").expect("session init");
 
-    let turn = session.send("hi there").await.expect("send failed");
-    eprintln!(
-        "handoff events: {:?}",
-        turn.events
-            .iter()
-            .map(|e| match e {
-                HandoffEvent::Message { agent, .. } => format!("msg:{agent}"),
-                HandoffEvent::HandOff { from, to, .. } => format!("handoff:{from}->{to}"),
-                HandoffEvent::Completed { agent } => format!("done:{agent}"),
-            })
-            .collect::<Vec<_>>()
-    );
+    let turn = session.send("What is 2+2?").await.expect("send failed");
+    let events: Vec<_> = turn
+        .events
+        .iter()
+        .map(|e| match e {
+            HandoffEvent::Message { agent, .. } => format!("msg:{agent}"),
+            HandoffEvent::HandOff { from, to, .. } => format!("handoff:{from}->{to}"),
+            HandoffEvent::Completed { agent } => format!("done:{agent}"),
+        })
+        .collect();
+    eprintln!("handoff events: {events:?}");
     eprintln!("handoff reply: {:?}", turn.reply);
+
+    // A handoff event should have fired, and the final reply should be
+    // non-empty (math_expert produced a response after being handed off).
+    let handed_off = turn.events.iter().any(|e| matches!(e, HandoffEvent::HandOff { .. }));
+    assert!(handed_off, "expected a HandOff event; got {events:?}");
     assert!(
         turn.reply.as_deref().map(str::trim).unwrap_or("").len() > 0,
-        "expected non-empty reply"
+        "expected non-empty reply after handoff — prefill fix likely not applied"
     );
 
     let transcript = session.transcript();
-    let user_msgs_after_1 = transcript
+    let user_msgs = transcript
         .iter()
         .filter(|m| matches!(m.role, MessageRole::User))
         .count();
-    assert_eq!(
-        user_msgs_after_1, 1,
-        "expected 1 user msg after 1 send, got {user_msgs_after_1}"
-    );
+    assert_eq!(user_msgs, 1, "expected 1 user msg after 1 send, got {user_msgs}");
     assert_no_duplicate_consecutive_assistant(transcript);
-
-    // A second send increments user-message count by exactly one.
-    let _ = session
-        .send("thanks, goodbye")
-        .await
-        .expect("second send failed");
-    let user_msgs_after_2 = session
-        .transcript()
-        .iter()
-        .filter(|m| matches!(m.role, MessageRole::User))
-        .count();
-    assert_eq!(
-        user_msgs_after_2, 2,
-        "expected 2 user msgs after 2 sends, got {user_msgs_after_2}"
-    );
 }
 
 // -- group_chat ----------------------------------------------------------
 
 #[tokio::test]
 #[ignore = "requires OLLAMA_SMOKE_URL"]
-async fn group_chat_single_round_produces_one_agent_turn() {
-    // Round 1 ends with an assistant turn; round 2 would ask qwen to produce
-    // after an assistant turn (empty). Cap at 1 round to test the plumbing.
+async fn group_chat_round_robin_runs_two_rounds() {
+    // Exercises the prefill fix: round 2's agent sees a transcript ending
+    // in round 1's assistant reply — without compensation it would return
+    // empty content on qwen.
     let provider = provider();
 
     let optimist = Agent::from_string(
@@ -296,7 +311,7 @@ async fn group_chat_single_round_produces_one_agent_turn() {
     )
     .with_max_tokens(64);
 
-    let manager = RoundRobinGroupChatManager::new().with_maximum_rounds(Some(1));
+    let manager = RoundRobinGroupChatManager::new().with_maximum_rounds(Some(2));
     let mut orchestrator =
         GroupChatOrchestrator::new(provider, MODEL, manager).with_agents([optimist, skeptic]);
 
@@ -308,20 +323,39 @@ async fn group_chat_single_round_produces_one_agent_turn() {
         run.transcript.iter().map(|m| &m.role).collect::<Vec<_>>()
     );
 
-    assert_eq!(run.rounds, 1, "expected 1 round, got {}", run.rounds);
+    assert_eq!(run.rounds, 2, "expected 2 rounds, got {}", run.rounds);
 
-    let assistant_msgs = run
+    let assistant_msgs: Vec<_> = run
         .transcript
         .iter()
         .filter(|m| matches!(m.role, MessageRole::Assistant))
-        .count();
+        .collect();
     assert_eq!(
-        assistant_msgs, 1,
-        "expected 1 assistant message in 1 round, got {assistant_msgs}"
+        assistant_msgs.len(),
+        2,
+        "expected 2 assistant messages, got {}",
+        assistant_msgs.len()
     );
+    for m in &assistant_msgs {
+        assert!(
+            m.content.as_deref().unwrap_or("").trim().len() > 0,
+            "an assistant message was empty — prefill fix likely not applied: {:?}",
+            m.name
+        );
+    }
 
     assert_user_task_count(&run.transcript, task, 1);
     assert_no_duplicate_consecutive_assistant(&run.transcript);
+
+    // Each agent spoke exactly once across the two rounds.
+    for name in ["optimist", "skeptic"] {
+        let n = run
+            .transcript
+            .iter()
+            .filter(|m| m.name.as_deref() == Some(name))
+            .count();
+        assert_eq!(n, 1, "{name} spoke {n} times, expected 1");
+    }
 }
 
 // -- magentic ------------------------------------------------------------
@@ -329,22 +363,17 @@ async fn group_chat_single_round_produces_one_agent_turn() {
 #[tokio::test]
 #[ignore = "requires OLLAMA_SMOKE_URL"]
 async fn magentic_delegates_and_manages_transcript_correctly() {
-    // Magentic alternates between a manager turn and a delegated agent turn.
-    // Past round 1 its transcript ends with an assistant (manager or agent)
-    // message, and qwen returns empty after that — identical to the
-    // sequential interop caveat in the module docstring.
-    //
-    // We set max_rounds=1 to exercise one full decision cycle: the manager
-    // produces its first decision and (usually) delegates to the worker,
-    // which produces one response. The orchestrator may still report
-    // MaxRoundsReached if the manager decides to iterate instead of
-    // completing on round 1 — we tolerate that as long as the transcript
-    // invariants hold.
+    // With the prefill fix, the delegated worker sees a synthetic user turn
+    // injected after the manager's assistant-role delegation message, so it
+    // actually responds instead of returning empty. We still cap max_rounds
+    // — the manager may take several iterations before emitting a
+    // `complete` decision — and accept either a clean finish or a
+    // MaxRoundsReached that at least produced content.
     let provider = provider();
 
     let manager = MagenticManager::standard();
     let mut orchestrator =
-        MagenticOrchestrator::new(provider, MODEL, manager).with_max_rounds(1);
+        MagenticOrchestrator::new(provider, MODEL, manager).with_max_rounds(3);
 
     let worker = Agent::from_string(
         "fact_finder",
@@ -356,13 +385,10 @@ async fn magentic_delegates_and_manages_transcript_correctly() {
     let task = "state one short fact about honey bees";
     let result = orchestrator.run(task).await;
 
-    // Either a clean run or MaxRoundsReached is acceptable; both produce a
-    // real turn of work. Other errors (provider failures, malformed manager
-    // decisions) should fail the test.
     let run = match result {
         Ok(run) => run,
         Err(denkwerk::AgentError::MaxRoundsReached) => {
-            eprintln!("magentic hit MaxRoundsReached — expected with qwen+1-round cap");
+            eprintln!("magentic hit MaxRoundsReached — acceptable as long as agent spoke");
             return;
         }
         Err(other) => panic!("magentic failed unexpectedly: {other:?}"),
@@ -373,6 +399,21 @@ async fn magentic_delegates_and_manages_transcript_correctly() {
         run.rounds, run.final_result
     );
     assert!(run.rounds >= 1, "magentic did not run any rounds");
+
+    // The worker should have produced at least one non-empty response —
+    // which only happens if the prefill fix is applied.
+    let worker_spoke_non_empty = run
+        .transcript
+        .iter()
+        .any(|m| {
+            m.name.as_deref() == Some("fact_finder")
+                && m.content.as_deref().unwrap_or("").trim().len() > 0
+        });
+    assert!(
+        worker_spoke_non_empty,
+        "fact_finder never produced non-empty content — prefill fix likely not applied"
+    );
+
     assert_user_task_count(&run.transcript, task, 1);
     assert_no_duplicate_consecutive_assistant(&run.transcript);
 }

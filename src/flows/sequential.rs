@@ -10,6 +10,7 @@ use crate::{
 use serde::Serialize;
 
 use super::handoffflow::AgentAction;
+use super::prefill::history_for_llm;
 use crate::shared_state::SharedStateContext;
 use crate::metrics::{AgentMetrics, ExecutionTimer, MetricsCollector, WithMetrics};
 
@@ -122,15 +123,22 @@ impl SequentialOrchestrator {
 
         for (index, agent) in self.pipeline.iter().enumerate() {
             let call_timer = ExecutionTimer::new();
+            // Compensate for chat templates (e.g. Qwen3's) that treat a
+            // trailing assistant turn as a prefill cue — see
+            // `flows::prefill` for the mechanism. Only adds a synthetic
+            // user turn for known-affected models and only when the last
+            // message is already an assistant reply.
+            let effective_model = agent.model_override().unwrap_or(self.model.as_str());
+            let history = history_for_llm(&transcript, effective_model);
             let skill_tools = self
                 .skill_runtime
                 .as_ref()
-                .and_then(|runtime| runtime.registry_for_agent(agent, &transcript));
+                .and_then(|runtime| runtime.registry_for_agent(agent, history.as_ref()));
             let turn = match agent
                 .execute_with_tools(
                     self.provider.as_ref(),
                     &self.model,
-                    &transcript,
+                    history.as_ref(),
                     skill_tools.as_ref(),
                     None,
                 )

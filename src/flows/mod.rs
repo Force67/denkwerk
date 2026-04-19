@@ -6,3 +6,4 @@ pub mod group_chat;
 pub mod dispatch;
 pub mod spec;
 pub mod flow_builder;
+pub mod prefill;

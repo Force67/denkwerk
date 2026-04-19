@@ -318,15 +318,21 @@ impl MagenticOrchestrator {
                     self.emit_event(&event);
                     events.push(event);
 
+                    // See `flows::prefill`: the manager just pushed its
+                    // delegation as an assistant message, so a qwen-family
+                    // worker would otherwise see a trailing-assistant
+                    // prefill and return empty.
+                    let effective_model = agent.model_override().unwrap_or(self.model.as_str());
+                    let history = super::prefill::history_for_llm(&transcript, effective_model);
                     let skill_tools = self
                         .skill_runtime
                         .as_ref()
-                        .and_then(|runtime| runtime.registry_for_agent(&agent, &transcript));
+                        .and_then(|runtime| runtime.registry_for_agent(&agent, history.as_ref()));
                     let turn = agent
                         .execute_with_tools(
                             self.provider.as_ref(),
                             &self.model,
-                            &transcript,
+                            history.as_ref(),
                             skill_tools.as_ref(),
                             None,
                         )
