@@ -159,6 +159,16 @@ impl CompletionRequest {
         self
     }
 
+    /// Clear any previously-set output cap. `None` means "no client-imposed
+    /// limit" — useful for reasoning models that need room to think. Each
+    /// provider's default then applies: Ollama generates up to context
+    /// exhaustion or natural stop; OpenAI picks a sensible bound from the
+    /// remaining context window.
+    pub fn without_max_tokens(mut self) -> Self {
+        self.max_tokens = None;
+        self
+    }
+
     pub fn with_temperature(mut self, value: f32) -> Self {
         self.temperature = Some(value);
         self
@@ -394,7 +404,7 @@ pub struct ModelInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::EmbeddingRequest;
+    use super::{CompletionRequest, EmbeddingRequest};
 
     #[test]
     fn embedding_request_defaults_dimensions_to_none() {
@@ -409,5 +419,13 @@ mod tests {
             EmbeddingRequest::new("model", vec!["input".to_string()]).with_dimensions(1536);
 
         assert_eq!(request.dimensions, Some(1536));
+    }
+
+    #[test]
+    fn completion_request_without_max_tokens_clears_cap() {
+        let request = CompletionRequest::new("m", vec![])
+            .with_max_tokens(128)
+            .without_max_tokens();
+        assert!(request.max_tokens.is_none());
     }
 }

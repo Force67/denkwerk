@@ -168,6 +168,15 @@ impl Agent {
         self
     }
 
+    /// Clear any previously-set output cap. Use this when you want the
+    /// agent to have full latitude — in particular, for reasoning models
+    /// that may need thousands of tokens to finish their thinking trace.
+    /// See `CompletionRequest::without_max_tokens` for the per-call mirror.
+    pub fn without_max_tokens(mut self) -> Self {
+        self.max_tokens = None;
+        self
+    }
+
     pub fn with_tool_choice(mut self, tool_choice: ToolChoice) -> Self {
         self.tool_choice = Some(tool_choice);
         self

@@ -34,14 +34,22 @@ Swap `OLLAMA_SMOKE_MODEL` to any tag you want to probe.
 
 ## Ollama provider suite (`tests/ollama_smoke.rs`)
 
-Provider-level probes (text, reasoning, think-off, preserve_thinking,
-streaming, vision, max context). Some tests assert on qwen-specific values
+Provider-level probes covering text + reasoning, think on/off, preserve
+thinking, streaming, vision, max context, **uncapped generation**, and
+**reasoning effort mapping**. Some tests assert on qwen-specific values
 (e.g. 262,144 max ctx) and are intentionally model-coupled.
 
-| model                   | text / reasoning | think off | preserve_thinking | streaming | vision | max ctx |
-| ----------------------- | ---------------- | --------- | ----------------- | --------- | ------ | ------- |
-| `qwen3.6:35b-a3b`       | yes              | yes       | yes               | yes       | —      | 262,144 |
-| `qwen3-vl:8b-instruct`  | —                | —         | —                 | —         | yes    | 262,144 |
+| model                   | text/reasoning | think off | preserve_thinking | streaming | vision | max ctx | uncapped | effort→Auto |
+| ----------------------- | -------------- | --------- | ----------------- | --------- | ------ | ------- | -------- | ----------- |
+| `qwen3.6:35b-a3b`       | yes            | yes       | yes               | yes       | —      | 262,144 | yes      | yes         |
+| `qwen3-vl:8b-instruct`  | —              | —         | —                 | —         | yes    | 262,144 | —        | —           |
+
+- **uncapped**: `CompletionRequest::without_max_tokens()` produces a
+  natural-stop completion well past any default token cap (observed ~1.7k
+  completion tokens with reasoning on).
+- **effort→Auto**: `ThinkMode::Auto` + `with_reasoning_effort(High)` emits
+  `think=true`; Auto without an effort emits `think=false` (deterministic,
+  not server-default).
 
 Reproduce:
 

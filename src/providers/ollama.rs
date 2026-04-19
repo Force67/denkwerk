@@ -168,10 +168,15 @@ impl Ollama {
     }
 
     fn resolve_think(&self, effort: Option<ReasoningEffort>) -> Option<bool> {
+        // `Auto` is caller-driven: thinking is on iff the request carried a
+        // `reasoning_effort`. We explicitly emit `think=false` when effort
+        // is absent rather than letting the server default apply, so the
+        // behavior is deterministic across models (qwen3.6 defaults to
+        // thinking ON when `think` is omitted).
         match self.config.think_mode {
             ThinkMode::Off => Some(false),
             ThinkMode::On => Some(true),
-            ThinkMode::Auto => effort.map(|_| true),
+            ThinkMode::Auto => Some(effort.is_some()),
         }
     }
 
@@ -1027,7 +1032,10 @@ mod tests {
     #[test]
     fn think_mode_resolution() {
         let auto = Ollama::from_config(OllamaConfig::new()).unwrap();
-        assert_eq!(auto.resolve_think(None), None);
+        // Auto is caller-driven: explicit false when no effort, explicit
+        // true when effort is set. Never passthrough (would let the server
+        // default surface non-deterministically).
+        assert_eq!(auto.resolve_think(None), Some(false));
         assert_eq!(auto.resolve_think(Some(ReasoningEffort::Low)), Some(true));
 
         let off = Ollama::from_config(OllamaConfig::new().with_think_mode(ThinkMode::Off)).unwrap();

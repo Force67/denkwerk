@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use denkwerk::{
     types::StreamEvent, ChatMessage, CompletionRequest, LLMProvider, Ollama, OllamaConfig,
-    ThinkMode,
+    ReasoningEffort, ThinkMode,
 };
 use futures_util::StreamExt;
 
@@ -245,4 +245,101 @@ async fn vision_qwen3_vl_describes_image() {
     let usage = res.usage.expect("usage missing");
     // Vision inputs add tokens on top of text.
     assert!(usage.prompt_tokens > 0);
+}
+
+#[tokio::test]
+#[ignore = "requires OLLAMA_SMOKE_URL"]
+async fn uncapped_reasoning_run_is_not_truncated() {
+    // Build a request with no max_tokens cap and a prompt that requires
+    // non-trivial reasoning. Verify the model runs to a natural stop
+    // (not `length`) and produces a substantial reasoning trace — proves
+    // the None-means-uncapped contract for reasoning workloads.
+    let ollama = provider(ThinkMode::On, false);
+
+    let req = CompletionRequest::new(
+        TEXT_MODEL,
+        vec![ChatMessage::user(
+            "Reason carefully step-by-step, then list exactly five mammals \
+             with one one-line fact each. End when complete.",
+        )],
+    )
+    .without_max_tokens();
+
+    assert!(req.max_tokens.is_none(), "max_tokens should be None");
+
+    let res = ollama.complete(req).await.expect("complete failed");
+    let content = res.message.content.clone().unwrap_or_default();
+    let reasoning_len = res
+        .reasoning
+        .as_ref()
+        .map(|traces| traces.iter().map(|t| t.content.len()).sum::<usize>())
+        .unwrap_or(0);
+    let usage = res.usage.expect("usage missing");
+    eprintln!(
+        "uncapped run: content_len={} reasoning_len={} eval_count={}",
+        content.len(),
+        reasoning_len,
+        usage.completion_tokens,
+    );
+
+    // A capped run with e.g. max_tokens=64 would cut off long before this.
+    assert!(
+        usage.completion_tokens > 500,
+        "expected >500 completion tokens when uncapped, got {}",
+        usage.completion_tokens,
+    );
+    assert!(reasoning_len > 0, "no reasoning captured");
+    assert!(!content.trim().is_empty(), "content was empty");
+    // Final content should reach the list — reasonably, "mammal" appears.
+    assert!(
+        content.to_lowercase().contains("mammal")
+            || content.matches(|c: char| c == '\n' || c == '.').count() >= 4,
+        "final content doesn't look like a five-item list: {content:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires OLLAMA_SMOKE_URL"]
+async fn reasoning_effort_drives_auto_think_mode() {
+    // ThinkMode::Auto maps CompletionRequest.reasoning_effort → native
+    // `think=true`. With effort set, a reasoning trace must appear; with
+    // effort unset (and Auto), thinking stays off — no trace.
+    let ollama = provider(ThinkMode::Auto, false);
+
+    // Effort unset → think stays off.
+    let no_effort = CompletionRequest::new(
+        TEXT_MODEL,
+        vec![ChatMessage::user("Say the word 'hi' exactly once.")],
+    )
+    .with_max_tokens(64);
+    let res = ollama.complete(no_effort).await.expect("no-effort call failed");
+    eprintln!("auto+no_effort reasoning: {:?}", res.reasoning.is_some());
+    assert!(
+        res.reasoning.is_none(),
+        "Auto without effort must not enable thinking"
+    );
+
+    // Effort set → think enabled; reasoning trace captured.
+    let with_effort = CompletionRequest::new(
+        TEXT_MODEL,
+        vec![ChatMessage::user("What is 2+2? Think briefly, then answer.")],
+    )
+    .without_max_tokens()
+    .with_reasoning_effort(ReasoningEffort::High);
+    let res = ollama
+        .complete(with_effort)
+        .await
+        .expect("with-effort call failed");
+    eprintln!(
+        "auto+high effort reasoning_len: {}",
+        res.reasoning
+            .as_ref()
+            .map(|t| t.iter().map(|r| r.content.len()).sum::<usize>())
+            .unwrap_or(0),
+    );
+    let traces = res
+        .reasoning
+        .expect("reasoning trace missing when effort=high under Auto");
+    assert!(!traces.is_empty());
+    assert!(!traces[0].content.is_empty());
 }
