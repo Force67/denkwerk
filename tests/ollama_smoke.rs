@@ -193,6 +193,29 @@ async fn streaming_reaches_completed() {
 
 #[tokio::test]
 #[ignore = "requires OLLAMA_SMOKE_URL"]
+async fn reports_max_context_for_qwen36() {
+    let ollama = provider(ThinkMode::Auto, false);
+
+    let ctx = ollama
+        .max_context_length(TEXT_MODEL)
+        .await
+        .expect("max_context_length failed");
+    eprintln!("qwen3.6 max ctx: {ctx:?}");
+    // Qwen3.6-35B-A3B ships with 256K (262_144) on this instance.
+    assert_eq!(ctx, Some(262_144));
+
+    // Also check that model_info() surfaces the same value on the
+    // standard ModelInfo field.
+    let info = ollama
+        .model_info(TEXT_MODEL)
+        .await
+        .expect("model_info failed");
+    assert_eq!(info.context_length, Some(262_144));
+    assert!(info.capabilities.supports_reasoning);
+}
+
+#[tokio::test]
+#[ignore = "requires OLLAMA_SMOKE_URL"]
 async fn vision_qwen3_vl_describes_image() {
     let ollama = provider(ThinkMode::Off, false);
 

@@ -144,6 +144,29 @@ impl Ollama {
         builder.header("Content-Type", "application/json")
     }
 
+    /// Fetch the model's max context length (tokens) from `/api/show`.
+    /// Returns `None` if the server doesn't advertise one for this model.
+    pub async fn max_context_length(&self, model: &str) -> Result<Option<u32>, LLMError> {
+        let response = self
+            .prepare(self.client.post(self.endpoint("api/show")))
+            .json(&json!({ "model": model }))
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(parse_error_text(&text));
+        }
+
+        let parsed: OllamaShowResponse = response.json().await?;
+        if let Some(err) = parsed.error {
+            return Err(LLMError::Provider(err));
+        }
+
+        Ok(max_context_from_model_info(&parsed.model_info))
+    }
+
     fn resolve_think(&self, effort: Option<ReasoningEffort>) -> Option<bool> {
         match self.config.think_mode {
             ThinkMode::Off => Some(false),
@@ -447,7 +470,37 @@ struct OllamaShowResponse {
     #[serde(default)]
     details: Option<OllamaTagDetails>,
     #[serde(default)]
+    model_info: Map<String, Value>,
+    #[serde(default)]
     error: Option<String>,
+}
+
+/// Extract the model's maximum context length from an `/api/show` `model_info`
+/// map. Ollama exposes it as `<architecture>.context_length` where
+/// `<architecture>` comes from `general.architecture`. We fall back to any
+/// other `*.context_length` key (excluding RoPE scaling sentinels like
+/// `*.rope.scaling.original_context_length`, which reports the pre-scaling
+/// value).
+fn max_context_from_model_info(model_info: &Map<String, Value>) -> Option<u32> {
+    fn as_u32(v: &Value) -> Option<u32> {
+        v.as_u64().and_then(|n| u32::try_from(n).ok())
+    }
+
+    if let Some(arch) = model_info
+        .get("general.architecture")
+        .and_then(|v| v.as_str())
+    {
+        let key = format!("{arch}.context_length");
+        if let Some(v) = model_info.get(&key).and_then(as_u32) {
+            return Some(v);
+        }
+    }
+
+    model_info
+        .iter()
+        .filter(|(k, _)| k.ends_with(".context_length") && !k.contains(".rope.scaling."))
+        .filter_map(|(_, v)| as_u32(v))
+        .max()
 }
 
 // ---------------------------------------------------------------------------
@@ -759,11 +812,13 @@ impl LLMProvider for Ollama {
             return Err(LLMError::Provider(err));
         }
 
+        let max_context = max_context_from_model_info(&parsed.model_info);
+
         Ok(model_info_from_show(
             id,
             parsed.capabilities,
             parsed.details.unwrap_or_default(),
-            self.config.num_ctx,
+            max_context,
         ))
     }
 
@@ -794,7 +849,10 @@ impl LLMProvider for Ollama {
                     provider: "ollama".to_string(),
                     created_at: None,
                     updated_at: m.modified_at,
-                    context_length: self.config.num_ctx,
+                    // Lazy: /api/tags doesn't carry the max context; callers
+                    // who need it should use `model_info(id)` or
+                    // `max_context_length(id)`.
+                    context_length: None,
                     max_completion_tokens: None,
                     input_modalities: vec!["text".to_string()],
                     output_modalities: vec!["text".to_string()],
@@ -817,7 +875,7 @@ fn model_info_from_show(
     id: &str,
     capabilities: Vec<String>,
     details: OllamaTagDetails,
-    num_ctx: Option<u32>,
+    context_length: Option<u32>,
 ) -> ModelInfo {
     let has = |c: &str| capabilities.iter().any(|s| s == c);
     let supports_vision = has("vision")
@@ -838,7 +896,7 @@ fn model_info_from_show(
         provider: "ollama".to_string(),
         created_at: None,
         updated_at: None,
-        context_length: num_ctx,
+        context_length,
         max_completion_tokens: None,
         input_modalities,
         output_modalities: vec!["text".to_string()],
@@ -1008,6 +1066,31 @@ mod tests {
         let l2 = pop_ndjson_line(&mut buf).unwrap();
         assert_eq!(l2, b"{\"b\":2}");
         assert!(pop_ndjson_line(&mut buf).is_none());
+    }
+
+    #[test]
+    fn max_context_uses_architecture_prefix() {
+        let mut mi = Map::new();
+        mi.insert("general.architecture".into(), json!("qwen35moe"));
+        mi.insert("qwen35moe.context_length".into(), json!(262144));
+        mi.insert("qwen35moe.rope.scaling.original_context_length".into(), json!(4096));
+        assert_eq!(max_context_from_model_info(&mi), Some(262144));
+    }
+
+    #[test]
+    fn max_context_falls_back_to_any_matching_key() {
+        let mut mi = Map::new();
+        // No general.architecture field.
+        mi.insert("foo.context_length".into(), json!(8192));
+        mi.insert("foo.rope.scaling.original_context_length".into(), json!(4096));
+        assert_eq!(max_context_from_model_info(&mi), Some(8192));
+    }
+
+    #[test]
+    fn max_context_returns_none_when_absent() {
+        let mut mi = Map::new();
+        mi.insert("general.architecture".into(), json!("bar"));
+        assert_eq!(max_context_from_model_info(&mi), None);
     }
 
     #[test]
