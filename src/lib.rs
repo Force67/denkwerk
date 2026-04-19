@@ -14,7 +14,7 @@ pub mod skills;
 
  pub use error::LLMError;
  pub use providers::LLMProvider;
- pub use providers::ollama::{Ollama, OllamaConfig};
+ pub use providers::ollama::{Ollama, OllamaConfig, ThinkMode};
 pub use types::{
     ChatMessage, CompletionRequest, CompletionResponse, CompletionStream, ImageUploadRequest,
     ImageUploadResponse, MessageRole, ProviderCapabilities, ReasoningEffort, ReasoningTrace,

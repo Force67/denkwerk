@@ -1049,35 +1049,4 @@ mod tests {
     }
 }
 
-fn extract_sse_event(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
-    if let Some(pos) = buffer.windows(2).position(|w| w == b"\n\n") {
-        let event = buffer[..pos].to_vec();
-        buffer.drain(..pos + 2);
-        return Some(event);
-    }
-
-    if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
-        let event = buffer[..pos].to_vec();
-        buffer.drain(..pos + 4);
-        return Some(event);
-    }
-
-    None
-}
-
-fn extract_data_payload(event: &[u8]) -> Result<String, LLMError> {
-    let text = String::from_utf8(event.to_vec())
-        .map_err(|_| LLMError::InvalidResponse("stream event contained invalid utf-8"))?;
-
-    let mut payload = String::new();
-    for line in text.lines() {
-        if let Some(value) = line.strip_prefix("data:") {
-            if !payload.is_empty() {
-                payload.push('\n');
-            }
-            payload.push_str(value.trim_start());
-        }
-    }
-
-    Ok(payload)
-}
+use super::{extract_data_payload, extract_sse_event};

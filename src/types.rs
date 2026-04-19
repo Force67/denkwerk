@@ -45,6 +45,11 @@ pub struct ChatMessage {
     /// Skipped during normal serde; the provider serializer handles these specially.
     #[serde(skip)]
     pub images: Vec<String>,
+    /// Provider-separated reasoning/thinking trace tied to this message. Populated by
+    /// providers that expose thinking as a distinct field (e.g. Ollama native API) and
+    /// echoed back on subsequent turns when the provider preserves thinking.
+    #[serde(skip)]
+    pub thinking: Option<String>,
 }
 
 impl ChatMessage {
@@ -56,6 +61,7 @@ impl ChatMessage {
             tool_call_id: None,
             tool_calls: Vec::new(),
             images: Vec::new(),
+            thinking: None,
         }
     }
 
@@ -79,6 +85,7 @@ impl ChatMessage {
             tool_call_id: Some(id.into()),
             tool_calls: Vec::new(),
             images: Vec::new(),
+            thinking: None,
         }
     }
 
@@ -91,7 +98,14 @@ impl ChatMessage {
             tool_call_id: None,
             tool_calls: Vec::new(),
             images,
+            thinking: None,
         }
+    }
+
+    /// Attach a reasoning/thinking trace to this message.
+    pub fn with_thinking(mut self, thinking: impl Into<String>) -> Self {
+        self.thinking = Some(thinking.into());
+        self
     }
 
     pub fn with_tool_calls(mut self, tool_calls: Vec<ToolCall>) -> Self {
